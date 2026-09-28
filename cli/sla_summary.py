@@ -10,14 +10,14 @@ Autor: Gustavo Alexandre
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from gridsearch.core import GRID_OUTPUT_DIR
 
 logger = logging.getLogger(__name__)
 
 
-def _load_latest_grid_state() -> Optional[Dict[str, Any]]:
+def _load_latest_grid_state() -> dict[str, Any] | None:
     """Carrega o arquivo de estado mais recente do grid search."""
     candidates = sorted(GRID_OUTPUT_DIR.glob("grid_search_state_*.json"), reverse=True)
     if not candidates:
@@ -35,9 +35,9 @@ def _load_latest_grid_state() -> Optional[Dict[str, Any]]:
 
 
 def _emit_sla_execution_summary(
-    sla_prefilter: Optional[Dict[str, Any]],
-    sla_profile_name: Optional[str],
-    results: Optional[List[Dict[str, Any]]] = None,
+    sla_prefilter: dict[str, Any] | None,
+    sla_profile_name: str | None,
+    results: list[dict[str, Any]] | None = None,
 ) -> None:
     """Imprime e registra no logger o resumo final da triagem SLA de execução."""
     if not sla_prefilter or not sla_prefilter.get("enabled"):
@@ -59,12 +59,12 @@ def _emit_sla_execution_summary(
 
 
 def _build_sla_execution_summary_lines(
-    sla_prefilter: Dict[str, Any],
-    sla_profile_name: Optional[str],
-    results: Optional[List[Dict[str, Any]]] = None,
-) -> List[str]:
+    sla_prefilter: dict[str, Any],
+    sla_profile_name: str | None,
+    results: list[dict[str, Any]] | None = None,
+) -> list[str]:
     """Monta linhas do bloco de resumo SLA de execução para print/log."""
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append("=" * 72)
     lines.append("RESUMO SLA (EXECUÇÃO)")
     lines.append("=" * 72)
@@ -116,9 +116,9 @@ def _build_sla_execution_summary_lines(
     return lines
 
 
-def _build_execution_kpi_lines(results: List[Dict[str, Any]]) -> List[str]:
+def _build_execution_kpi_lines(results: list[dict[str, Any]]) -> list[str]:
     """Monta linhas de KPIs agregados da execução real dos experimentos."""
-    lines: List[str] = []
+    lines: list[str] = []
 
     executed = [r for r in results if isinstance(r, dict)]
     successful = [r for r in executed if r.get("status") == "success"]
@@ -129,8 +129,8 @@ def _build_execution_kpi_lines(results: List[Dict[str, Any]]) -> List[str]:
         f"rodados={len(executed)} | sucesso={len(successful)} | falha={len(failed)}"
     )
 
-    def _values(path1: str, path2: str) -> List[float]:
-        vals: List[float] = []
+    def _values(path1: str, path2: str) -> list[float]:
+        vals: list[float] = []
         for item in successful:
             sub = item.get(path1, {}) if isinstance(item.get(path1), dict) else {}
             val = sub.get(path2)
@@ -162,7 +162,7 @@ def _build_execution_kpi_lines(results: List[Dict[str, Any]]) -> List[str]:
     if cost_vals:
         lines.append(f"  KPI custo           : total=${sum(cost_vals):.6f} USD")
 
-    f1_vals: List[float] = []
+    f1_vals: list[float] = []
     for item in successful:
         evaluation = item.get("evaluation", {}) if isinstance(item.get("evaluation"), dict) else {}
         raw_f1 = evaluation.get("f1_score")

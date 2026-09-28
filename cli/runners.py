@@ -13,7 +13,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 from gridsearch.core import GRID_OUTPUT_DIR, run_grid_search
 from gridsearch.skyband import (
