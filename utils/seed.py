@@ -2,10 +2,11 @@
 Módulo para garantir reprodutibilidade em experimentos.
 Configura seeds para todas as bibliotecas e frameworks usados.
 """
-import random
-import numpy as np
-import os
 import logging
+import os
+import random
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
