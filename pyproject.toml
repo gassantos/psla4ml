@@ -1,7 +1,7 @@
 [project]
-name = "gridsearch-skyband"
+name = "psla4ml"
 version = "0.1.0"
-description =   "GridSearch-Skyband combina hiperparâmetros em Pipelines ML conforme SLA"
+description =   "PSLA4ML combina hiperparâmetros em Pipelines ML conforme SLA"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [

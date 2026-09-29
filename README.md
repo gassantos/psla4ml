@@ -234,6 +234,13 @@ enable_monitoring = true
 
 O custo pode ser derivado de `ENERGY_COST_USD_PER_KWH` ou da taxa horária declarada no ambiente do grid.
 
+O manifesto em `workflow_runs` é a fonte de verdade da telemetria. Cada resultado em
+`grid_search_state_*.json` replica essa estrutura em `task_telemetry`, com atividade,
+regime, status e tentativas de cada tarefa; o campo `resources` continua como resumo
+compatível com Skyband, derivado dessas tentativas. O `experiment_summary_*.csv` usa
+uma linha por tentativa de tarefa, com as métricas padronizadas em colunas e contexto,
+artefatos e métricas adicionais em campos JSON.
+
 ## Skyband, SLA e Tiers
 
 Skyband é executado automaticamente após `single` ou `grid`; use `--no-skyband` para desativá-lo.
