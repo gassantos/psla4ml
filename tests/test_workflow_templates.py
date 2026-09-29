@@ -168,6 +168,7 @@ def test_huggingface_task_adapters_execute_t0_t2_t5_and_project_legacy_result():
         "valid_dataset_type": "HuggingFace",
         "test_dataset_type": "HuggingFace",
     }
+    assert launch_calls[0]["collect_resource_telemetry"] is False
     summary = aggregate_workflow_run(result, workflow)
     assert summary["resources"]["task_time_sec"] is not None
     assert summary["resources"]["energy_kwh"] == pytest.approx(0.75)
