@@ -312,6 +312,7 @@ def build_huggingface_task_functions(
             environment_overrides=environment_overrides,
             environment_cost_per_hour_usd=environment_cost_per_hour_usd,
             tpu_cores=tpu_cores,
+            collect_resource_telemetry=False,
         )
         if result is None:
             raise RuntimeError("O launcher não retornou resultado para a adaptação Hugging Face.")
@@ -425,6 +426,7 @@ def build_launcher_task_functions(
             config_path=config.config_path, gpu_list=gpu_list, parallel_workers=1,
             train_file=config.train_dataset, dataset_overrides=None,
             environment_overrides=environment_overrides, tpu_cores=tpu_cores,
+            collect_resource_telemetry=False,
         )
         if result is None or result.get("experiment", {}).get("status") != "success":
             raise RuntimeError("Adaptação do launcher local falhou.")

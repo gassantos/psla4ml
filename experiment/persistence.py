@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from .helpers import METRICS_DIR
-from .workflow import ExperimentRun, TaskExecutionAttempt, TaskRun, TaskStatus
+from .workflow import (
+    ExperimentDefinition,
+    ExperimentRun,
+    TaskExecutionAttempt,
+    TaskRun,
+    TaskStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +139,85 @@ def write_workflow_run(workflow: ExperimentRun) -> Path:
             json.dump(task, f, indent=2)
 
     return run_dir
+
+
+def append_workflow_csv_rows(
+    workflow: ExperimentRun,
+    *,
+    device_type: str,
+    definition: ExperimentDefinition | None = None,
+    context: dict[str, Any] | None = None,
+) -> Path:
+    """Acrescenta uma linha por tentativa ao sumário CSV de experimentos."""
+    csv_path = _workflow_summary_csv_path(device_type)
+    headers = [
+        "experiment_run_id", "definition_name", "workflow_status",
+        "task_id", "task_name", "task_type", "activity", "regime", "task_status",
+        "attempt_id", "attempt_number", "attempt_status", "started_at", "completed_at",
+        "task_time_sec", "avg_ram_mb", "peak_ram_mb", "vram_mb", "peak_vram_mb",
+        "energy_kwh", "emissions_kg_co2", "cost_usd",
+        "resources_json", "evaluation_json", "artifacts_json", "error_type", "error",
+        "experiment_context_json",
+    ]
+    write_header = not csv_path.exists()
+    definitions = {task.task_id: task for task in definition.tasks} if definition else {}
+
+    with open(csv_path, "a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=headers)
+        if write_header:
+            writer.writeheader()
+        for task in workflow.tasks:
+            task_definition = definitions.get(task.task_id)
+            for attempt in task.attempts:
+                metrics = attempt.metrics if isinstance(attempt.metrics, dict) else {}
+                resources = metrics.get("resources", {})
+                resources = resources if isinstance(resources, dict) else {}
+                writer.writerow({
+                    "experiment_run_id": workflow.experiment_run_id,
+                    "definition_name": workflow.definition_name,
+                    "workflow_status": workflow.status,
+                    "task_id": task.task_id,
+                    "task_name": task.name,
+                    "task_type": task.task_type,
+                    "activity": task_definition.activity.value if task_definition else None,
+                    "regime": task_definition.regime.value if task_definition else None,
+                    "task_status": task.status.value,
+                    "attempt_id": attempt.attempt_id,
+                    "attempt_number": attempt.attempt_number,
+                    "attempt_status": attempt.status.value,
+                    "started_at": attempt.started_at,
+                    "completed_at": attempt.completed_at,
+                    "task_time_sec": resources.get("task_time_sec"),
+                    "avg_ram_mb": resources.get("avg_ram_mb"),
+                    "peak_ram_mb": resources.get("peak_ram_mb"),
+                    "vram_mb": resources.get("vram_mb"),
+                    "peak_vram_mb": resources.get("peak_vram_mb"),
+                    "energy_kwh": resources.get("energy_kwh"),
+                    "emissions_kg_co2": resources.get("emissions_kg_co2"),
+                    "cost_usd": resources.get("cost_usd"),
+                    "resources_json": json.dumps(resources, ensure_ascii=False, sort_keys=True),
+                    "evaluation_json": json.dumps(metrics.get("evaluation", {}), ensure_ascii=False, sort_keys=True),
+                    "artifacts_json": json.dumps(attempt.artifacts, ensure_ascii=False, sort_keys=True),
+                    "error_type": attempt.error_type,
+                    "error": attempt.error,
+                    "experiment_context_json": json.dumps(context or {}, ensure_ascii=False, sort_keys=True),
+                })
+    return csv_path
+
+
+def _workflow_summary_csv_path(device_type: str) -> Path:
+    """Evita misturar a telemetria por tarefa com um CSV legado existente."""
+    suffix = datetime.now().astimezone().strftime("%Y%m%d")
+    csv_path = METRICS_DIR / f"experiment_summary_{device_type}{suffix}.csv"
+    if not csv_path.exists():
+        return csv_path
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        header = next(csv.reader(file), [])
+    return (
+        csv_path
+        if "task_id" in header and "attempt_id" in header
+        else METRICS_DIR / f"experiment_summary_{device_type}{suffix}_task_telemetry.csv"
+    )
 
 
 def load_workflow_run(run_dir: Path) -> ExperimentRun:

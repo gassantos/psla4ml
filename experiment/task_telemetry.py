@@ -5,14 +5,15 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import psutil
 import torch
 
-from .helpers import compute_cost_usd
+from .helpers import METRICS_DIR, compute_cost_usd
 
-TrackerFactory = Callable[[], Any]
+TrackerFactory = Callable[..., Any]
 
 
 class TaskTelemetryCollector:
@@ -25,14 +26,21 @@ class TaskTelemetryCollector:
         environment_cost_per_hour_usd: float | None = None,
         tracker_factory: TrackerFactory | None = None,
         sample_interval_sec: float = 0.1,
+        emissions_output_dir: Path | None = None,
     ) -> None:
         self._enable_emissions = enable_emissions
         self._environment_cost_per_hour_usd = environment_cost_per_hour_usd
-        self._tracker_factory = tracker_factory or _default_tracker
+        self._tracker_factory: TrackerFactory = tracker_factory or _default_tracker
+        self._uses_default_tracker = tracker_factory is None
         self._sample_interval_sec = sample_interval_sec
+        self._emissions_output_dir = emissions_output_dir or METRICS_DIR
 
     def measure(
-        self, task_fn: Callable[[], dict[str, Any] | None]
+        self,
+        task_fn: Callable[[], dict[str, Any] | None],
+        *,
+        task_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, float | None], Exception | None]:
         """Executa a tarefa e retorna sua saida junto das metricas observadas."""
         _synchronize_cuda()
@@ -44,7 +52,7 @@ class TaskTelemetryCollector:
             args=(process, samples, stop_sampling, self._sample_interval_sec),
             daemon=True,
         )
-        tracker = self._start_tracker()
+        tracker = self._start_tracker(task_id, attempt_id)
         started = time.perf_counter()
         sampler.start()
         output: dict[str, Any] = {}
@@ -75,11 +83,19 @@ class TaskTelemetryCollector:
         }
         return output, metrics, error
 
-    def _start_tracker(self) -> Any | None:
+    def _start_tracker(self, task_id: str | None, attempt_id: str | None) -> Any | None:
         if not self._enable_emissions:
             return None
         try:
-            tracker = self._tracker_factory()
+            tracker = (
+                self._tracker_factory(
+                    output_dir=self._emissions_output_dir,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                )
+                if self._uses_default_tracker
+                else self._tracker_factory()
+            )
             tracker.start()
             return tracker
         except Exception:  # noqa: BLE001
@@ -98,10 +114,23 @@ class TaskTelemetryCollector:
             return None, None
 
 
-def _default_tracker() -> Any:
+def _default_tracker(
+    *,
+    output_dir: Path,
+    task_id: str | None,
+    attempt_id: str | None,
+) -> Any:
     from codecarbon import EmissionsTracker
 
-    return EmissionsTracker(project_name="workflow-task", save_to_file=False, log_level="error")
+    safe_task_id = task_id or "task"
+    safe_attempt_id = attempt_id or "attempt"
+    return EmissionsTracker(
+        project_name=f"workflow-{safe_task_id}",
+        output_dir=output_dir.as_posix(),
+        output_file=f"emissions_{safe_task_id}_{safe_attempt_id}.csv",
+        save_to_file=True,
+        log_level="error",
+    )
 
 
 def _sample_rss(

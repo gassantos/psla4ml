@@ -210,7 +210,11 @@ class SequentialWorkflowExecutor:
         attempt.transition_to(TaskStatus.RUNNING)
         attempt.started_at = now_iso()
         try:
-            output, telemetry_metrics, task_error = self._telemetry.measure(task_fn)
+            output, telemetry_metrics, task_error = self._telemetry.measure(
+                task_fn,
+                task_id=task_id,
+                attempt_id=attempt.attempt_id,
+            )
             task_resources = output.get("metrics", {}).get("resources", {})
             attempt.metrics = {
                 **output.get("metrics", {}),

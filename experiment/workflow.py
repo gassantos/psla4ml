@@ -238,6 +238,9 @@ def legacy_task_run(
     """Projeta o formato histórico como workflow de uma tarefa implícita."""
     experiment = result["experiment"]
     success = experiment["status"] == "success"
+    resources = dict(result.get("resources", {}))
+    if "task_time_sec" not in resources and "train_time_sec" in resources:
+        resources["task_time_sec"] = resources["train_time_sec"]
     attempt = TaskExecutionAttempt(
         attempt_id=experiment["id"],
         attempt_number=1,
@@ -245,7 +248,7 @@ def legacy_task_run(
         started_at=experiment.get("timestamp_start"),
         completed_at=experiment.get("timestamp_end"),
         metrics={
-            "resources": result.get("resources", {}),
+            "resources": resources,
             "evaluation": result.get("evaluation"),
         },
         artifacts={"result_config_name": experiment["config_name"]},

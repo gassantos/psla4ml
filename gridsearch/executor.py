@@ -417,7 +417,7 @@ def run_grid_search(
     # antes de qualquer experimento ser executado. Alimenta gridsearch.
     # milp_instance como um arquivo já pronto para leitura (sem heurística
     # embutida no leitor da instância MILP).
-    env_details = grid_config.get("environments", {}).get("details")
+    env_details = grid_config.get("environments", {}).get("details") # type: ignore
     if env_details:
         from .resource_discovery import collect_and_persist_resource_catalog
 
@@ -579,7 +579,7 @@ def run_grid_search(
                         output_dir=output_dir,
                     )
 
-                    completed_eligible = len(completed_experiments.intersection(eligible_idx))
+                    completed_eligible = len(completed_experiments.intersection(eligible_idx)) # type: ignore
                     logger.info(f"Progresso: {completed_eligible}/{total_experiments}")
 
                 except Exception as e:
@@ -608,7 +608,7 @@ def run_grid_search(
                 output_dir=output_dir,
             )
 
-            completed_eligible = len(completed_experiments.intersection(eligible_idx))
+            completed_eligible = len(completed_experiments.intersection(eligible_idx)) # type: ignore
             logger.info(f"Progresso: {completed_eligible}/{total_experiments}")
 
     return all_results

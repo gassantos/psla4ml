@@ -51,7 +51,7 @@ from .helpers import (
     now_iso,
 )
 from .persistence import (
-    append_csv_row,
+    append_workflow_csv_rows,
     build_result_dict,
     write_json_result,
     write_workflow_run,
@@ -86,6 +86,7 @@ def execute_experiment(
     compute_metrics_fn: ComputeMetricsFn | None = None,
     xla_rank: int | None = None,
     xla_world_size: int = 1,
+    collect_resource_telemetry: bool = True,
 ) -> dict | None:
     """Executa um experimento completo de forma rastreável.
 
@@ -110,6 +111,8 @@ def execute_experiment(
         compute_metrics_fn: Callable compatível com ``ComputeMetricsFn``.
         xla_rank: Rank PJRT do worker atual; ``None`` fora do launcher XLA.
         xla_world_size: Quantidade de workers PJRT usados pelo experimento.
+        collect_resource_telemetry: Quando ``False``, delega a coleta ao
+            ``TaskTelemetryCollector`` da tarefa que encapsula o runner.
     """
     import tempfile as _tempfile
 
@@ -167,7 +170,12 @@ def execute_experiment(
 
     # -------- ENERGY TRACKER --------
     tracker = None
-    if is_primary_process and EmissionsTracker and mon.getboolean("enable_monitoring"):
+    if (
+        collect_resource_telemetry
+        and is_primary_process
+        and EmissionsTracker
+        and mon.getboolean("enable_monitoring")
+    ):
         from .helpers import METRICS_DIR
         tracker = EmissionsTracker(
             project_name=exp["name"],
@@ -209,8 +217,9 @@ def execute_experiment(
                 break
             _stop_ram.wait(timeout=1.0)
 
-    ram_thread = threading.Thread(target=_sample_ram, daemon=True)
-    ram_thread.start()
+    ram_thread = threading.Thread(target=_sample_ram, daemon=True) if collect_resource_telemetry else None
+    if ram_thread:
+        ram_thread.start()
 
     status = "failed"
     stdout = ""
@@ -226,8 +235,9 @@ def execute_experiment(
         logger.error("Treinamento falhou: %s", exc, exc_info=True)  # noqa: G201
         stderr = str(exc)
     finally:
-        _stop_ram.set()
-        ram_thread.join(timeout=5)
+        if ram_thread:
+            _stop_ram.set()
+            ram_thread.join(timeout=5)
         sys.stdout = tee.original
         output_lines = tee.lines
         stdout = "".join(output_lines)
@@ -351,35 +361,28 @@ def execute_experiment(
         stderr=stderr,
         tpu_check=tpu_check,
     )
+    if not collect_resource_telemetry:
+        result["resources"] = {
+            "total_gflops": total_gflops,
+            "avg_gflops_per_batch": avg_gflops_per_batch,
+        }
+        return result
+
     workflow = legacy_task_run(result)
     result["workflow"] = workflow.to_dict()
 
     write_json_result(result, json_filename)
     write_workflow_run(workflow)
 
-    # -------- CSV AGGREGATION --------
-    append_csv_row(
-        experiment_id=experiment_id,
-        json_filename=json_filename,
-        seed=int(exp["seed"]),
+    append_workflow_csv_rows(
+        workflow,
         device_type=device_type,
-        parallel_workers=parallel_workers,
-        train_dataset_name=_train_dataset_name,
-        optimizer=train["optimizer"],
-        learning_rate=float(train["learning_rate"]),
-        batch_size=int(train["batch_size"]),
-        epoch=int(train["epoch"]),
-        exec_time=exec_time,
-        energy_kwh=energy_kwh,
-        emissions_kg=emissions_kg,
-        cost_usd=cost_usd,
-        avg_ram=avg_ram,
-        peak_ram=peak_ram,
-        avg_gflops_per_batch=avg_gflops_per_batch,
-        total_gflops=total_gflops,
-        status=status,
-        end_iso=end_iso,
-        eval_metrics=eval_metrics,
+        context={
+            "experiment": result["experiment"],
+            "environment": result["environment"],
+            "execution": result["execution"],
+            "hyperparameters": result["hyperparameters"],
+        },
     )
 
     print(f"[OK] Wrapper finalizou em {exec_time:.2f} segundos - {exp['name']} ({status})")
