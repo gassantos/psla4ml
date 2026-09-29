@@ -61,7 +61,7 @@ def run_single_experiment(
 ):
     """Executa uma combinação única pelo template workflow T0 -> T2 -> T5."""
     from experiment.helpers import load_config
-    from experiment.persistence import write_workflow_run
+    from experiment.persistence import append_workflow_csv_rows, write_workflow_run
     from experiment.task_executor import SequentialWorkflowExecutor
     from experiment.task_telemetry import TaskTelemetryCollector
     from experiment.workflow import ResourceRequirements
@@ -70,6 +70,7 @@ def run_single_experiment(
         build_launcher_task_functions,
         build_launcher_workflow,
     )
+    from utils.device import get_torch_device
 
     if not validate_paths(config_path):
         raise FileNotFoundError(f"Arquivo de configuração não encontrado: {config_path}")
@@ -80,6 +81,7 @@ def run_single_experiment(
         resources=ResourceRequirements(gpu_count=len(gpu_list or []), coupling_degree=0.9 if gpu_list else 0.0),
     )
     monitoring = load_config(config_path).getboolean("monitoring", "enable_monitoring", fallback=False)
+    definition = build_launcher_workflow(config)
     workflow = SequentialWorkflowExecutor(
         build_launcher_task_functions(
             config,
@@ -88,8 +90,9 @@ def run_single_experiment(
             tpu_cores=tpu_cores,
         ),
         telemetry=TaskTelemetryCollector(enable_emissions=monitoring),
-    ).execute(build_launcher_workflow(config))
+    ).execute(definition)
     run_dir = write_workflow_run(workflow)
+    append_workflow_csv_rows(workflow, device_type=get_torch_device()["type"], definition=definition)
     if workflow.status != "success":
         raise RuntimeError(f"Workflow single falhou. Manifesto: {run_dir}")
     return workflow

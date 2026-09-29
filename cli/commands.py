@@ -23,7 +23,11 @@ from experiment.generic_workflow import (
     load_generic_workflow_spec,
 )
 from experiment.helpers import load_config
-from experiment.persistence import load_workflow_run, write_workflow_run
+from experiment.persistence import (
+    append_workflow_csv_rows,
+    load_workflow_run,
+    write_workflow_run,
+)
 from experiment.task_cache import TaskCache
 from experiment.task_executor import SequentialWorkflowExecutor
 from experiment.task_telemetry import TaskTelemetryCollector
@@ -151,6 +155,7 @@ class SingleCommand(Command):
             telemetry=TaskTelemetryCollector(enable_emissions=monitoring),
         ).execute(definition, resume_from=resume_from)
         run_dir = write_workflow_run(workflow)
+        append_workflow_csv_rows(workflow, device_type=device_type, definition=definition)
         if workflow.status != "success":
             raise RuntimeError(f"Workflow Hugging Face falhou. Manifesto: {run_dir}")
 
@@ -190,6 +195,7 @@ class SingleCommand(Command):
             telemetry=TaskTelemetryCollector(enable_emissions=monitoring),
         ).execute(build_launcher_workflow(config), resume_from=resume_from)
         run_dir = write_workflow_run(workflow)
+        append_workflow_csv_rows(workflow, device_type=device_type, definition=build_launcher_workflow(config))
         if workflow.status != "success":
             raise RuntimeError(f"Workflow single falhou. Manifesto: {run_dir}")
 
@@ -248,6 +254,7 @@ class BertPliWorkflowCommand(Command):
             task_functions, telemetry=TaskTelemetryCollector(enable_emissions=monitoring)
         ).execute(definition)
         run_dir = write_workflow_run(workflow)
+        append_workflow_csv_rows(workflow, device_type=get_torch_device()["type"], definition=definition)
         if args.workflow_dry_run:
             print(f"Workflow BERT-PLI validado sem treinamento: {run_dir}")
             for command in commands:
@@ -268,14 +275,16 @@ class GenericWorkflowCommand(Command):
         functions = build_generic_task_functions(
             spec, command_runner=commands.append if args.workflow_dry_run else None
         )
+        definition = build_generic_workflow(spec)
         workflow = SequentialWorkflowExecutor(
             functions,
             telemetry=TaskTelemetryCollector(
                 enable_emissions=spec.enable_emissions,
                 environment_cost_per_hour_usd=spec.environment_cost_per_hour_usd,
             ),
-        ).execute(build_generic_workflow(spec))
+        ).execute(definition)
         run_dir = write_workflow_run(workflow)
+        append_workflow_csv_rows(workflow, device_type=get_torch_device()["type"], definition=definition)
         if args.workflow_dry_run:
             print(f"Workflow generico validado sem executar comandos: {run_dir}")
             for command in commands:
