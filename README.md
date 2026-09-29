@@ -8,7 +8,7 @@
 
 PSLA4ML mede execuções de aprendizado de máquina, explora configurações de recursos e hiperparâmetros e seleciona trade-offs por k-Skyband. Toda execução é um **workflow rastreável**, com tarefas, artefatos versionados, telemetria e manifesto persistido.
 
-Referência: Santos, G.; Bedo, M.; Frota, Y.; Oliveira, D. *Definição de Acordos de Nível de Serviço Personalizados para Treinamento de Modelos via Consultas k-Skyband*. SBBD 2026. [DOI](https://doi.org/10.5753/sbbd.2026.249138).
+Referência: Santos, G.; Bedo, M.; Frota, Y.; Oliveira, D. _Definição de Acordos de Nível de Serviço Personalizados para Treinamento de Modelos via Consultas k-Skyband_. SBBD 2026. [DOI](https://doi.org/10.5753/sbbd.2026.249138).
 
 ## Instalação
 
@@ -272,8 +272,8 @@ Perfis em `gridsearch/config/sla_profiles.json`: `economico`, `sustentavel`, `te
 
 ## Estrutura
 
-```
-📁 gridsearch-skyband/
+```text
+📁 psla4ml/
 │
 ├── 🐍 main.py          CLI principal
 ├── 📁 cli/             Parser, comandos e orquestração
