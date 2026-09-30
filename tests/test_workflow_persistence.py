@@ -133,3 +133,45 @@ def test_append_workflow_csv_rows_writes_root_error_type_for_infra_error(monkeyp
         rows = list(csv.DictReader(file))
     assert rows[0]["error_type"] == "InfraError"
     assert rows[0]["root_error_type"] == "ReadTimeout"
+
+
+def test_append_workflow_csv_rows_writes_failure_stage(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    definition = ExperimentDefinition(
+        "workflow", (TaskDefinition("train", "Treinar", activity=TaskActivity.ADAPTATION),)
+    )
+    workflow = ExperimentRun(
+        "run-3", "workflow", "failed", [TaskRun(
+            "train", "Treinar", "train", TaskStatus.FAILED, [
+                TaskExecutionAttempt(
+                    "attempt-1", 1, TaskStatus.FAILED,
+                    error="init falhou",
+                    error_type="RuntimeError",
+                    failure_stage="init",
+                ),
+            ],
+        )],
+    )
+
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU", definition=definition)
+
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["failure_stage"] == "init"
+
+
+def test_build_result_dict_includes_failure_stage(monkeypatch, tmp_path):
+    from experiment.persistence import build_result_dict
+    result = build_result_dict(
+        experiment_id="exp-1", json_filename="x.json", seed=42, status="failed",
+        date_exec="20260930", start_iso="2026-09-30T10:00:00",
+        end_iso="2026-09-30T10:01:00", device_type="CPU", device_name="cpu",
+        precision="fp32", parallel_workers=1, train_dataset_name="train",
+        optimizer="adam", learning_rate=1e-4, avg_gflops_per_batch=0.0,
+        batch_size=32, epoch=3, exec_time=60.0, energy_kwh=None,
+        emissions_kg=None, cost_usd=None, avg_ram=None, peak_ram=None,
+        total_gflops=0.0, eval_metrics={}, stdout="", stderr="init error",
+        failure_stage="init",
+    )
+    assert result["logs"]["failure_stage"] == "init"
+    assert result["logs"]["stderr_tail"] == "init error"

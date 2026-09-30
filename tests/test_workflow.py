@@ -655,7 +655,7 @@ def test_classify_error_type_returns_class_name_for_unknown_exception():
 def test_classify_error_type_maps_requests_read_timeout(monkeypatch):
     """Verifica mapeamento via isinstance quando requests está disponível."""
     try:
-        import requests.exceptions as req_exc
+        import requests.exceptions as req_exc  # type: ignore
     except ImportError:
         pytest.skip("requests não disponível")
 
@@ -781,10 +781,49 @@ def test_infra_retry_policy_exhausts_after_max_attempts():
 
 def test_adapt_model_template_uses_infra_retry_policy():
     """adapt_model declarado pelo template HuggingFace usa INFRA_RETRY_POLICY."""
-    from experiment.workflow_templates import build_huggingface_workflow, HuggingFaceWorkflowConfig
+    from experiment.workflow_templates import (  # type: ignore
+        HuggingFaceWorkflowConfig,
+        build_huggingface_workflow,
+    )
 
     config = HuggingFaceWorkflowConfig(name="test-wf")
     definition = build_huggingface_workflow(config)
 
     adapt_task = next(t for t in definition.tasks if t.task_id == "adapt_model")
     assert adapt_task.retry_policy is INFRA_RETRY_POLICY
+
+
+# ---------------------------------------------------------------------------
+# failure_stage — propagação do estágio de falha
+# ---------------------------------------------------------------------------
+
+def test_executor_extracts_failure_stage_from_exception():
+    """Executor preenche failure_stage quando a exceção carrega o atributo."""
+    def _failing_task():
+        exc = RuntimeError("init falhou")
+        exc.failure_stage = "init"  # type: ignore[attr-defined]
+        raise exc
+
+    definition = ExperimentDefinition(
+        name="stage-test",
+        tasks=(TaskDefinition("t1", "Tarefa"),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _failing_task}).execute(definition)
+
+    attempt = run.tasks[0].attempts[0]
+    assert attempt.failure_stage == "init"
+    assert attempt.error_type == "RuntimeError"
+
+
+def test_executor_failure_stage_is_none_when_not_set():
+    """failure_stage fica None quando a exceção não carrega o atributo."""
+    def _failing_task():
+        raise ValueError("erro sem stage")
+
+    definition = ExperimentDefinition(
+        name="no-stage-test",
+        tasks=(TaskDefinition("t1", "Tarefa"),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _failing_task}).execute(definition)
+
+    assert run.tasks[0].attempts[0].failure_stage is None
