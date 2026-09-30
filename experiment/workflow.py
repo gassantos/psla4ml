@@ -162,6 +162,12 @@ class RetryPolicy:
         return error_type in self.retryable_error_types
 
 
+# Política padrão para tarefas de adaptação: recupera apenas falhas de infra
+# (timeouts e erros de rede classificados como InfraError), sem mascarar
+# erros funcionais de modelagem.
+INFRA_RETRY_POLICY = RetryPolicy(max_attempts=3, retryable_error_types=("InfraError",))
+
+
 @dataclass(frozen=True)
 class TaskDefinition:
     """Definição declarativa de uma unidade funcional do workflow."""

@@ -10,6 +10,7 @@ from typing import Any
 
 from .generic_workflow import SUPPORTED_EXPERIMENT_TYPES
 from .workflow import (
+    INFRA_RETRY_POLICY,
     ArtifactDefinition,
     ArtifactKind,
     ExecutionRegime,
@@ -244,6 +245,7 @@ def build_huggingface_workflow(config: HuggingFaceWorkflowConfig) -> ExperimentD
                 activity=TaskActivity.ADAPTATION,
                 regime=ExecutionRegime.BUILD,
                 resources=config.resources,
+                retry_policy=INFRA_RETRY_POLICY,
             ),
             TaskDefinition(
                 task_id="evaluate_model",
