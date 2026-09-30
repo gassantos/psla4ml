@@ -11,6 +11,7 @@ Autor: Gustavo Alexandre
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,41 @@ from gridsearch.skyband import (
 from .constants import DEFAULT_SLA_PROFILES, DEFAULT_TRAIN_DATASET
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_model_id_for_prewarm(base_config_path: str) -> str:
+    """Resolve o identificador/caminho do backbone BERT definido no config."""
+    from experiment.helpers import load_config
+
+    cfg = load_config(base_config_path)
+    return cfg.get("model", "bert_path", fallback="bert-base-uncased")
+
+
+def _prewarm_huggingface_assets(model_id_or_path: str) -> None:
+    """Pré-carrega tokenizer no cache local do projeto.
+
+    Isso reduz corrida entre workers no primeiro acesso e evita chamadas de rede
+    durante a inicialização de cada tentativa quando o modo offline estiver ativo.
+    """
+    from transformers import AutoModel, AutoTokenizer
+
+    from utils.paths import PathManager
+
+    logger.info("Prewarm Hugging Face: carregando '%s' no cache local...", model_id_or_path)
+    AutoTokenizer.from_pretrained(
+        model_id_or_path,
+        cache_dir=str(PathManager.HF_HUB_CACHE_DIR),
+    )
+    AutoModel.from_pretrained(
+        model_id_or_path,
+        cache_dir=str(PathManager.HF_HUB_CACHE_DIR),
+    )
+
+
+def _enable_hf_offline_mode() -> None:
+    """Força execução offline para chamadas da Hugging Face Hub."""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    logger.info("HF_HUB_OFFLINE=1 ativado para execução do grid.")
 
 
 def validate_paths(config_path: str, grid_config_path: str | None = None) -> bool:
@@ -367,6 +403,14 @@ def run_grid_search_experiments(
         sys.exit(1)
     if tpu_cores > 1 and parallel > 1:
         raise ValueError("TPU multicore requer --parallel 1 para evitar spawn aninhado.")
+
+    model_id_or_path = _resolve_model_id_for_prewarm(base_config_path)
+    _prewarm_huggingface_assets(model_id_or_path)
+    _enable_hf_offline_mode()
+    if dataset_overrides and dataset_overrides.get("hf_dataset_source") == "hub":
+        logger.warning(
+            "Dataset source=hub com HF_HUB_OFFLINE=1: é necessário cache local prévio do dataset."
+        )
 
     # Carrega configuração da grade
     with open(grid_config_path, 'r', encoding='utf-8') as f:
