@@ -103,6 +103,33 @@ def test_append_workflow_csv_rows_writes_one_row_per_task_attempt(monkeypatch, t
     assert rows[0]["activity"] == "adaptation"
     assert rows[0]["task_time_sec"] == "12.5"
     assert json.loads(rows[0]["evaluation_json"]) == {"f1_score": 0.9}
+    assert rows[0]["root_error_type"] == ""
     assert json.loads(rows[0]["experiment_context_json"]) == {
         "environment": {"precision": "fp32"},
     }
+
+
+def test_append_workflow_csv_rows_writes_root_error_type_for_infra_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    definition = ExperimentDefinition(
+        "workflow", (TaskDefinition("train", "Treinar", activity=TaskActivity.ADAPTATION),)
+    )
+    workflow = ExperimentRun(
+        "run-2", "workflow", "failed", [TaskRun(
+            "train", "Treinar", "train", TaskStatus.FAILED, [
+                TaskExecutionAttempt(
+                    "attempt-1", 1, TaskStatus.FAILED,
+                    error="hub timeout",
+                    error_type="InfraError",
+                    root_error_type="ReadTimeout",
+                ),
+            ],
+        )],
+    )
+
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU", definition=definition)
+
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["error_type"] == "InfraError"
+    assert rows[0]["root_error_type"] == "ReadTimeout"

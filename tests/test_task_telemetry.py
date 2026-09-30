@@ -55,6 +55,7 @@ def test_telemetry_is_recorded_when_task_fails():
 
     attempt = workflow.tasks[0].attempts[0]
     assert attempt.status is TaskStatus.FAILED
-    assert attempt.error_type == "TimeoutError"
+    assert attempt.error_type == "InfraError"
+    assert attempt.root_error_type == "TimeoutError"
     assert tracker.stopped
     assert attempt.metrics["resources"]["energy_kwh"] == 0.25

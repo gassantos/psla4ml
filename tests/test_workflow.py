@@ -20,6 +20,7 @@ from experiment.workflow import (
     TaskExecutionAttempt,
     TaskRun,
     TaskStatus,
+    classify_error_type,
     legacy_task_run,
 )
 from experiment.workflow_planner import WorkflowPlanner
@@ -218,7 +219,7 @@ def test_sequential_executor_retries_eligible_error_type():
             TaskDefinition(
                 task_id="train",
                 name="Treinar",
-                retry_policy=RetryPolicy(max_attempts=2, retryable_error_types=("TimeoutError",)),
+                retry_policy=RetryPolicy(max_attempts=2, retryable_error_types=("InfraError",)),
             ),
         ),
     )
@@ -235,7 +236,8 @@ def test_sequential_executor_retries_eligible_error_type():
 
     assert workflow.status == "success"
     assert calls == 2
-    assert workflow.tasks[0].attempts[0].error_type == "TimeoutError"
+    assert workflow.tasks[0].attempts[0].error_type == "InfraError"
+    assert workflow.tasks[0].attempts[0].root_error_type == "TimeoutError"
 
 
 def test_retry_policy_requires_positive_max_attempts():
@@ -624,3 +626,87 @@ def test_planner_rejects_indirect_cycle():
 
     with pytest.raises(ValueError, match="first.*second.*third"):
         WorkflowPlanner().plan(definition)
+
+
+# ---------------------------------------------------------------------------
+# classify_error_type
+# ---------------------------------------------------------------------------
+
+class _FakeReadTimeout(Exception):
+    """Stub que imita requests.exceptions.ReadTimeout sem importar requests."""
+
+
+def test_classify_error_type_returns_infra_error_for_builtin_timeout():
+    assert classify_error_type(TimeoutError("conn")) == "InfraError"
+
+
+def test_classify_error_type_returns_class_name_for_generic_exception():
+    assert classify_error_type(ValueError("bad value")) == "ValueError"
+
+
+def test_classify_error_type_returns_class_name_for_unknown_exception():
+    class CustomDomainError(Exception):
+        pass
+
+    assert classify_error_type(CustomDomainError()) == "CustomDomainError"
+
+
+def test_classify_error_type_maps_requests_read_timeout(monkeypatch):
+    """Verifica mapeamento via isinstance quando requests está disponível."""
+    try:
+        import requests.exceptions as req_exc
+    except ImportError:
+        pytest.skip("requests não disponível")
+
+    exc = req_exc.ReadTimeout("hub timeout")
+    assert classify_error_type(exc) == "InfraError"
+
+
+def test_classify_error_type_maps_requests_connect_timeout(monkeypatch):
+    try:
+        import requests.exceptions as req_exc
+    except ImportError:
+        pytest.skip("requests não disponível")
+
+    exc = req_exc.ConnectTimeout("connect timeout")
+    assert classify_error_type(exc) == "InfraError"
+
+
+def test_executor_sets_infra_error_and_root_error_type_on_timeout():
+    """Executor preenche error_type=InfraError e root_error_type=ReadTimeout."""
+    try:
+        import requests.exceptions as req_exc
+    except ImportError:
+        pytest.skip("requests não disponível")
+
+    def _failing_task():
+        raise req_exc.ReadTimeout("hub indisponível")
+
+    definition = ExperimentDefinition(
+        name="infra-test",
+        tasks=(TaskDefinition(task_id="t1", name="Falha de rede"),),
+    )
+    executor = SequentialWorkflowExecutor({"t1": _failing_task})
+    run = executor.execute(definition)
+
+    attempt = run.tasks[0].attempts[0]
+    assert attempt.error_type == "InfraError"
+    assert attempt.root_error_type == "ReadTimeout"
+    assert run.tasks[0].status == TaskStatus.FAILED
+
+
+def test_executor_does_not_set_root_error_type_for_non_infra_errors():
+    """root_error_type fica None quando não é InfraError."""
+    def _failing_task():
+        raise RuntimeError("erro funcional")
+
+    definition = ExperimentDefinition(
+        name="func-error-test",
+        tasks=(TaskDefinition(task_id="t1", name="Erro funcional"),),
+    )
+    executor = SequentialWorkflowExecutor({"t1": _failing_task})
+    run = executor.execute(definition)
+
+    attempt = run.tasks[0].attempts[0]
+    assert attempt.error_type == "RuntimeError"
+    assert attempt.root_error_type is None
