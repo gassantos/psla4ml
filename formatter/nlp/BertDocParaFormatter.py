@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+
 """Formatador para a extração de embeddings com BertPoolOutMax (Etapa 3 do BERT-PLI).
 
 Para cada par caso-decisão, cria uma matriz de tokenizações
@@ -13,12 +13,12 @@ Linhas/colunas faltantes são preenchidas com zeros.
 __author__ = 'yshao'
 
 import torch
-
 from transformers import AutoTokenizer
 
 from formatter.Basic import BasicFormatter
-from .bert_feature_tool import example_item_to_feature
 from utils.paths import PathManager
+
+from .bert_feature_tool import example_item_to_feature
 
 
 class BertDocParaFormatter(BasicFormatter):
@@ -34,6 +34,7 @@ class BertDocParaFormatter(BasicFormatter):
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.get("model", "bert_path"),
             cache_dir=str(PathManager.HF_HUB_CACHE_DIR),
+            local_files_only=True,
         )
         self.max_len = config.getint("data", "max_seq_length")
         self.output_mode = config.get('model', 'output_mode')

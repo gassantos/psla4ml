@@ -20,9 +20,11 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from warnings import filterwarnings
 
-import psutil
+import psutil  # type: ignore
 import torch
+from codecarbon import EmissionsTracker  # type: ignore
 
 from gridsearch.protocols import (
     ComputeMetricsFn,
@@ -58,13 +60,6 @@ from .persistence import (
 )
 from .tpu_check import check_tpu_acceleration
 from .workflow import legacy_task_run
-
-try:
-    from codecarbon import EmissionsTracker
-except ImportError:
-    EmissionsTracker = None
-
-from warnings import filterwarnings
 
 filterwarnings("ignore", category=UserWarning)
 
@@ -301,10 +296,10 @@ def execute_experiment(
                 logger.info(f"Loaded profiling metrics: {avg_gflops_per_batch:.2f} GFLOPs/batch")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Could not load profiling metrics: {e}")
-            total_gflops = estimate_bert_flops(seq_len=256)
+            total_gflops = estimate_bert_flops(seq_len=256) # type: ignore
     else:
         logger.warning("Profiling metrics not found, using estimation")
-        total_gflops = estimate_bert_flops(seq_len=256)
+        total_gflops = estimate_bert_flops(seq_len=256) # type: ignore
 
     # -------- EVAL METRICS --------
     eval_metrics = extract_eval_metrics(

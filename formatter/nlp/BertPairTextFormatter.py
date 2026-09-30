@@ -37,6 +37,7 @@ class BertPairTextFormatter(BasicFormatter):
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.get("model", "bert_path"),
             cache_dir=str(PathManager.HF_HUB_CACHE_DIR),
+            local_files_only=True,
         )
         self.max_len = config.getint("data", "max_seq_length")
         self.output_mode = config.get('model', 'output_mode')
