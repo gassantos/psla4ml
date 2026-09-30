@@ -319,7 +319,10 @@ def build_huggingface_task_functions(
         if result is None:
             raise RuntimeError("O launcher não retornou resultado para a adaptação Hugging Face.")
         if result.get("experiment", {}).get("status") != "success":
-            raise RuntimeError(result.get("logs", {}).get("stderr_tail") or "Adaptação Hugging Face falhou.")
+            logs = result.get("logs", {})
+            exc = RuntimeError(logs.get("stderr_tail") or "Adaptação Hugging Face falhou.")
+            exc.failure_stage = logs.get("failure_stage")  # type: ignore[attr-defined]
+            raise exc
         result_holder["result"] = result
         workflow = build_huggingface_workflow(workflow_config)
         model = workflow.tasks[1].outputs[0]
@@ -431,7 +434,10 @@ def build_launcher_task_functions(
             collect_resource_telemetry=False,
         )
         if result is None or result.get("experiment", {}).get("status") != "success":
-            raise RuntimeError("Adaptação do launcher local falhou.")
+            logs = {} if result is None else result.get("logs", {})
+            exc = RuntimeError(logs.get("stderr_tail") or "Adaptação do launcher local falhou.")
+            exc.failure_stage = logs.get("failure_stage")  # type: ignore[attr-defined]
+            raise exc
         result_holder["result"] = result
         model = build_launcher_workflow(config).tasks[1].outputs[0]
         return {

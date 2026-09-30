@@ -220,14 +220,19 @@ def execute_experiment(
     stdout = ""
     stderr = ""
     output_lines: list = []
+    _failure_stage: str | None = None
 
     try:
+        _failure_stage = "create_config"
         config = create_config(config_path)
+        _failure_stage = "init"
         parameters = init_fn(config, gpu_list, None, "train")
+        _failure_stage = "train"
         train_fn(parameters, config, gpu_list)
         status = "success"
+        _failure_stage = None
     except Exception as exc:
-        logger.error("Treinamento falhou: %s", exc, exc_info=True)  # noqa: G201
+        logger.error("Treinamento falhou em %s: %s", _failure_stage, exc, exc_info=True)  # noqa: G201
         stderr = str(exc)
     finally:
         if ram_thread:
@@ -355,6 +360,7 @@ def execute_experiment(
         stdout=stdout,
         stderr=stderr,
         tpu_check=tpu_check,
+        failure_stage=_failure_stage,
     )
     if not collect_resource_telemetry:
         result["resources"] = {

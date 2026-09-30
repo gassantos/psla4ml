@@ -57,6 +57,7 @@ def build_result_dict(
     stderr: str,
     tpu_check: Any = None,
     xla_world_size: int = 1,
+    failure_stage: str | None = None,
 ) -> dict[str, Any]:
     """Constrói o dicionário padronizado de resultado de um experimento."""
     result: dict[str, Any] = {
@@ -99,6 +100,7 @@ def build_result_dict(
         "logs": {
             "stdout_tail": stdout[-1000:],
             "stderr_tail": stderr[-1000:],
+            "failure_stage": failure_stage,
         },
     }
 
@@ -157,7 +159,7 @@ def append_workflow_csv_rows(
         "task_time_sec", "avg_ram_mb", "peak_ram_mb", "vram_mb", "peak_vram_mb",
         "energy_kwh", "emissions_kg_co2", "cost_usd",
         "resources_json", "evaluation_json", "artifacts_json",
-        "error_type", "root_error_type", "error",
+        "error_type", "root_error_type", "failure_stage", "error",
         "experiment_context_json",
     ]
     write_header = not csv_path.exists()
@@ -201,6 +203,7 @@ def append_workflow_csv_rows(
                     "artifacts_json": json.dumps(attempt.artifacts, ensure_ascii=False, sort_keys=True),
                     "error_type": attempt.error_type,
                     "root_error_type": attempt.root_error_type,
+                    "failure_stage": attempt.failure_stage,
                     "error": attempt.error,
                     "experiment_context_json": json.dumps(context or {}, ensure_ascii=False, sort_keys=True),
                 })

@@ -228,6 +228,7 @@ class TaskExecutionAttempt:
     error: str | None = None
     error_type: str | None = None
     root_error_type: str | None = None
+    failure_stage: str | None = None
 
     def transition_to(self, target: TaskStatus) -> None:
         validate_task_transition(self.status, target)

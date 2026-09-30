@@ -233,6 +233,7 @@ class SequentialWorkflowExecutor:
             attempt.error_type = classify_error_type(exc)
             if attempt.error_type == "InfraError":
                 attempt.root_error_type = raw_type
+            attempt.failure_stage = getattr(exc, "failure_stage", None)
             attempt.transition_to(TaskStatus.FAILED)
         finally:
             attempt.completed_at = now_iso()
