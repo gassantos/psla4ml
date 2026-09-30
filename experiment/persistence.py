@@ -156,7 +156,8 @@ def append_workflow_csv_rows(
         "attempt_id", "attempt_number", "attempt_status", "started_at", "completed_at",
         "task_time_sec", "avg_ram_mb", "peak_ram_mb", "vram_mb", "peak_vram_mb",
         "energy_kwh", "emissions_kg_co2", "cost_usd",
-        "resources_json", "evaluation_json", "artifacts_json", "error_type", "error",
+        "resources_json", "evaluation_json", "artifacts_json",
+        "error_type", "root_error_type", "error",
         "experiment_context_json",
     ]
     write_header = not csv_path.exists()
@@ -199,6 +200,7 @@ def append_workflow_csv_rows(
                     "evaluation_json": json.dumps(metrics.get("evaluation", {}), ensure_ascii=False, sort_keys=True),
                     "artifacts_json": json.dumps(attempt.artifacts, ensure_ascii=False, sort_keys=True),
                     "error_type": attempt.error_type,
+                    "root_error_type": attempt.root_error_type,
                     "error": attempt.error,
                     "experiment_context_json": json.dumps(context or {}, ensure_ascii=False, sort_keys=True),
                 })

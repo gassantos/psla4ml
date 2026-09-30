@@ -24,6 +24,7 @@ from .workflow import (
     TaskExecutionAttempt,
     TaskRun,
     TaskStatus,
+    classify_error_type,
 )
 from .workflow_planner import WorkflowPlanner
 
@@ -228,7 +229,10 @@ class SequentialWorkflowExecutor:
             if not attempt.metrics:
                 attempt.metrics = {"resources": {}}
             attempt.error = str(exc)
-            attempt.error_type = exc.__class__.__name__
+            raw_type = exc.__class__.__name__
+            attempt.error_type = classify_error_type(exc)
+            if attempt.error_type == "InfraError":
+                attempt.root_error_type = raw_type
             attempt.transition_to(TaskStatus.FAILED)
         finally:
             attempt.completed_at = now_iso()

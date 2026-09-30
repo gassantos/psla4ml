@@ -9,12 +9,36 @@ Definição de workflows conforme tarefas.
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
 WORKFLOW_SCHEMA_VERSION = "1.0"
 LEGACY_TASK_ID = "legacy-main-task"
+
+# Pares (módulo, nomes) cujas exceções indicam falha de infraestrutura (rede/timeout).
+_INFRA_EXCEPTION_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("requests.exceptions", ("ReadTimeout", "ConnectTimeout", "ConnectionError", "Timeout")),
+    ("urllib3.exceptions", ("ReadTimeoutError", "ConnectTimeoutError", "NameResolutionError")),
+    ("httpx", ("TimeoutException", "ConnectError", "ReadTimeout")),
+)
+
+
+def classify_error_type(exc: BaseException) -> str:
+    """Retorna 'InfraError' para falhas de rede/timeout; caso contrário, o nome da classe."""
+    if isinstance(exc, TimeoutError):
+        return "InfraError"
+    for module_path, names in _INFRA_EXCEPTION_SOURCES:
+        try:
+            mod = importlib.import_module(module_path)
+        except ImportError:
+            continue
+        for name in names:
+            cls = getattr(mod, name, None)
+            if cls is not None and isinstance(exc, cls):
+                return "InfraError"
+    return exc.__class__.__name__
 
 
 class TaskStatus(StrEnum):
@@ -197,6 +221,7 @@ class TaskExecutionAttempt:
     artifacts: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     error_type: str | None = None
+    root_error_type: str | None = None
 
     def transition_to(self, target: TaskStatus) -> None:
         validate_task_transition(self.status, target)
