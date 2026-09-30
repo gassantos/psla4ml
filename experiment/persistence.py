@@ -160,6 +160,7 @@ def append_workflow_csv_rows(
         "energy_kwh", "emissions_kg_co2", "cost_usd",
         "resources_json", "evaluation_json", "artifacts_json",
         "error_type", "root_error_type", "failure_stage", "error",
+        "is_infra_error", "attempt_count", "is_final_attempt",
         "experiment_context_json",
     ]
     write_header = not csv_path.exists()
@@ -171,6 +172,7 @@ def append_workflow_csv_rows(
             writer.writeheader()
         for task in workflow.tasks:
             task_definition = definitions.get(task.task_id)
+            attempt_count = len(task.attempts)
             for attempt in task.attempts:
                 metrics = attempt.metrics if isinstance(attempt.metrics, dict) else {}
                 resources = metrics.get("resources", {})
@@ -205,6 +207,9 @@ def append_workflow_csv_rows(
                     "root_error_type": attempt.root_error_type,
                     "failure_stage": attempt.failure_stage,
                     "error": attempt.error,
+                    "is_infra_error": attempt.error_type == "InfraError" if attempt.error_type else False,
+                    "attempt_count": attempt_count,
+                    "is_final_attempt": attempt.attempt_number == attempt_count,
                     "experiment_context_json": json.dumps(context or {}, ensure_ascii=False, sort_keys=True),
                 })
     return csv_path

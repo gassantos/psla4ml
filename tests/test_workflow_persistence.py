@@ -175,3 +175,79 @@ def test_build_result_dict_includes_failure_stage(monkeypatch, tmp_path):
     )
     assert result["logs"]["failure_stage"] == "init"
     assert result["logs"]["stderr_tail"] == "init error"
+
+
+# ---------------------------------------------------------------------------
+# Item 6 — colunas derivadas: is_infra_error, attempt_count, is_final_attempt
+# ---------------------------------------------------------------------------
+
+def _make_workflow_with_attempts(attempts: list[TaskExecutionAttempt]) -> ExperimentRun:
+    final_status = attempts[-1].status if attempts else TaskStatus.FAILED
+    return ExperimentRun(
+        "run-x", "workflow", final_status.value,
+        [TaskRun("train", "Treinar", "train", final_status, attempts)],
+    )
+
+
+def test_is_infra_error_true_for_infra_error_attempt(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([
+        TaskExecutionAttempt("a1", 1, TaskStatus.FAILED, error_type="InfraError"),
+    ])
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["is_infra_error"] == "True"
+
+
+def test_is_infra_error_false_for_functional_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([
+        TaskExecutionAttempt("a1", 1, TaskStatus.FAILED, error_type="RuntimeError"),
+    ])
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["is_infra_error"] == "False"
+
+
+def test_is_infra_error_false_for_successful_attempt(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([
+        TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED),
+    ])
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["is_infra_error"] == "False"
+
+
+def test_attempt_count_and_is_final_attempt_with_retry(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    attempts = [
+        TaskExecutionAttempt("a1", 1, TaskStatus.FAILED, error_type="InfraError"),
+        TaskExecutionAttempt("a2", 2, TaskStatus.FAILED, error_type="InfraError"),
+        TaskExecutionAttempt("a3", 3, TaskStatus.SUCCEEDED),
+    ]
+    workflow = _make_workflow_with_attempts(attempts)
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    assert len(rows) == 3
+    assert all(r["attempt_count"] == "3" for r in rows)
+    assert rows[0]["is_final_attempt"] == "False"
+    assert rows[1]["is_final_attempt"] == "False"
+    assert rows[2]["is_final_attempt"] == "True"
+
+
+def test_attempt_count_one_for_single_attempt(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([
+        TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED),
+    ])
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["attempt_count"] == "1"
+    assert rows[0]["is_final_attempt"] == "True"
