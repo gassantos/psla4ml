@@ -116,6 +116,37 @@ def _build_sla_execution_summary_lines(
     return lines
 
 
+def _build_infra_waste_lines(infra_failed: list[dict[str, Any]]) -> list[str]:
+    """Monta linhas de desperdício operacional causado por falhas de infraestrutura."""
+    lines: list[str] = []
+    lines.append(f"  Desperdício infra    : {len(infra_failed)} experimento(s) perdido(s) por InfraError")
+
+    def _sum_resource(key: str) -> float | None:
+        vals = []
+        for r in infra_failed:
+            val = (r.get("resources") or {}).get(key)
+            if val is not None:
+                try:
+                    vals.append(float(val))
+                except (TypeError, ValueError):
+                    pass
+        return sum(vals) if vals else None
+
+    wasted_time = _sum_resource("train_time_sec")
+    if wasted_time is not None:
+        lines.append(f"  Tempo desperdiçado  : {wasted_time:.2f}s")
+
+    wasted_energy = _sum_resource("energy_kwh")
+    if wasted_energy is not None:
+        lines.append(f"  Energia desperdiçada: {wasted_energy:.6f} kWh")
+
+    wasted_cost = _sum_resource("cost_usd")
+    if wasted_cost is not None:
+        lines.append(f"  Custo desperdiçado  : ${wasted_cost:.6f} USD")
+
+    return lines
+
+
 def _build_execution_kpi_lines(results: list[dict[str, Any]]) -> list[str]:
     """Monta linhas de KPIs agregados da execução real dos experimentos."""
     lines: list[str] = []
@@ -123,11 +154,17 @@ def _build_execution_kpi_lines(results: list[dict[str, Any]]) -> list[str]:
     executed = [r for r in results if isinstance(r, dict)]
     successful = [r for r in executed if r.get("status") == "success"]
     failed = [r for r in executed if r.get("status") == "failed"]
+    infra_failed = [r for r in failed if r.get("error_type") == "InfraError"]
+    functional_failed = [r for r in failed if r.get("error_type") != "InfraError"]
 
     lines.append(
         "  Execução real       : "
-        f"rodados={len(executed)} | sucesso={len(successful)} | falha={len(failed)}"
+        f"rodados={len(executed)} | sucesso={len(successful)} | "
+        f"falha_infra={len(infra_failed)} | falha_funcional={len(functional_failed)}"
     )
+
+    if infra_failed:
+        lines.extend(_build_infra_waste_lines(infra_failed))
 
     def _values(path1: str, path2: str) -> list[float]:
         vals: list[float] = []

@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from experiment.workflow import classify_error_type
 from utils.device import get_torch_device
 from utils.log_setup import get_log_queue, setup_worker_logging
 from utils.paths import PathManager
@@ -340,6 +341,7 @@ def run_single_experiment(
             "grid_experiment_idx": experiment_idx,
             "grid_params": params,
             "status": "failed",
+            "error_type": classify_error_type(e),
             "error": str(e),
             "traceback": traceback.format_exc(),
             "workflow": asdict(build_huggingface_workflow(workflow_config)),

@@ -59,9 +59,12 @@ def analyze_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     # Filtra experimentos bem-sucedidos
     successful = [r for r in results if r.get("status") == "success"]
     failed = [r for r in results if r.get("status") == "failed"]
+    infra_failed = [r for r in failed if r.get("error_type") == "InfraError"]
+    functional_failed = [r for r in failed if r.get("error_type") != "InfraError"]
 
     logger.info(f"Experimentos bem-sucedidos: {len(successful)}")
-    logger.info(f"Experimentos falhos: {len(failed)}")
+    logger.info(f"Experimentos falhos por InfraError: {len(infra_failed)}")
+    logger.info(f"Experimentos falhos por erro funcional: {len(functional_failed)}")
 
     if not successful:
         logger.warning("Nenhum experimento foi concluído com sucesso!")
@@ -69,6 +72,8 @@ def analyze_results(results: list[dict[str, Any]]) -> dict[str, Any]:
             "total_experiments": len(results),
             "successful": 0,
             "failed": len(failed),
+            "infra_failed": len(infra_failed),
+            "functional_failed": len(functional_failed),
             "best_config": None
         }
 
@@ -119,6 +124,8 @@ def analyze_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "total_experiments": len(results),
         "successful": len(successful),
         "failed": len(failed),
+        "infra_failed": len(infra_failed),
+        "functional_failed": len(functional_failed),
         "energy_cost_usd_per_kwh": ENERGY_COST_USD_PER_KWH,
 
         "best_by_time": {
