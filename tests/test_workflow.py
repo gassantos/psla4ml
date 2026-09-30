@@ -8,6 +8,7 @@ from experiment.task_executor import (
     SequentialWorkflowExecutor,
 )
 from experiment.workflow import (
+    INFRA_RETRY_POLICY,
     ArtifactDefinition,
     ArtifactKind,
     ExecutionRegime,
@@ -194,7 +195,7 @@ def test_sequential_executor_does_not_retry_non_eligible_error():
             TaskDefinition(
                 task_id="train",
                 name="Treinar",
-                retry_policy=RetryPolicy(max_attempts=3, retryable_error_types=("TimeoutError",)),
+                retry_policy=RetryPolicy(max_attempts=3, retryable_error_types=("InfraError",)),
             ),
         ),
     )
@@ -710,3 +711,80 @@ def test_executor_does_not_set_root_error_type_for_non_infra_errors():
     attempt = run.tasks[0].attempts[0]
     assert attempt.error_type == "RuntimeError"
     assert attempt.root_error_type is None
+
+
+# ---------------------------------------------------------------------------
+# INFRA_RETRY_POLICY — retry seletivo para InfraError
+# ---------------------------------------------------------------------------
+
+def test_infra_retry_policy_only_retries_infra_error():
+    calls = 0
+
+    def _task():
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise TimeoutError("transitório")
+        return {}
+
+    definition = ExperimentDefinition(
+        name="retry-infra",
+        tasks=(TaskDefinition("t1", "Tarefa", retry_policy=INFRA_RETRY_POLICY),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _task}).execute(definition)
+
+    assert run.status == "success"
+    assert calls == 3
+    assert len(run.tasks[0].attempts) == 3
+    assert run.tasks[0].attempts[0].error_type == "InfraError"
+    assert run.tasks[0].attempts[0].root_error_type == "TimeoutError"
+
+
+def test_infra_retry_policy_does_not_retry_functional_error():
+    calls = 0
+
+    def _task():
+        nonlocal calls
+        calls += 1
+        raise ValueError("configuração inválida")
+
+    definition = ExperimentDefinition(
+        name="no-retry-func",
+        tasks=(TaskDefinition("t1", "Tarefa", retry_policy=INFRA_RETRY_POLICY),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _task}).execute(definition)
+
+    assert run.status == "failed"
+    assert calls == 1
+    assert len(run.tasks[0].attempts) == 1
+    assert run.tasks[0].attempts[0].error_type == "ValueError"
+
+
+def test_infra_retry_policy_exhausts_after_max_attempts():
+    calls = 0
+
+    def _task():
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("hub indisponível")
+
+    definition = ExperimentDefinition(
+        name="exhaust-retries",
+        tasks=(TaskDefinition("t1", "Tarefa", retry_policy=INFRA_RETRY_POLICY),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _task}).execute(definition)
+
+    assert run.status == "failed"
+    assert calls == INFRA_RETRY_POLICY.max_attempts
+    assert len(run.tasks[0].attempts) == INFRA_RETRY_POLICY.max_attempts
+
+
+def test_adapt_model_template_uses_infra_retry_policy():
+    """adapt_model declarado pelo template HuggingFace usa INFRA_RETRY_POLICY."""
+    from experiment.workflow_templates import build_huggingface_workflow, HuggingFaceWorkflowConfig
+
+    config = HuggingFaceWorkflowConfig(name="test-wf")
+    definition = build_huggingface_workflow(config)
+
+    adapt_task = next(t for t in definition.tasks if t.task_id == "adapt_model")
+    assert adapt_task.retry_policy is INFRA_RETRY_POLICY
