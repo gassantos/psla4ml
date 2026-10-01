@@ -36,7 +36,7 @@ def _resolve_model_id_for_prewarm(base_config_path: str) -> str:
 
 
 def _prewarm_huggingface_assets(model_id_or_path: str) -> None:
-    """Pré-carrega tokenizer no cache local do projeto.
+    """Pré-carrega tokenizer/modelo no cache local do projeto.
 
     Isso reduz corrida entre workers no primeiro acesso e evita chamadas de rede
     durante a inicialização de cada tentativa quando o modo offline estiver ativo.
@@ -54,6 +54,35 @@ def _prewarm_huggingface_assets(model_id_or_path: str) -> None:
         model_id_or_path,
         cache_dir=str(PathManager.HF_HUB_CACHE_DIR),
     )
+
+
+def _prewarm_huggingface_dataset(
+    dataset_id: str,
+    dataset_config: str | None = None,
+    splits: tuple[str, ...] = ("train", "validation", "test"),
+) -> None:
+    """Pré-carrega todos os splits do dataset HF no cache local antes do modo offline.
+
+    Deve ser chamada ANTES de _enable_hf_offline_mode(). Sem isso, os workers
+    falham instantaneamente em T0 (ingest_dataset) ao tentar chamar load_dataset
+    com HF_HUB_OFFLINE=1 sem cache local disponível.
+    """
+    from datasets import load_dataset
+
+    from utils.paths import PathManager
+
+    cache_dir = str(PathManager.HF_HUB_CACHE_DIR)
+    label = f"{dataset_id}" + (f"/{dataset_config}" if dataset_config else "")
+    logger.info("Prewarm dataset HF: carregando '%s' no cache local...", label)
+    for split in splits:
+        kwargs: dict = {"split": split, "cache_dir": cache_dir}
+        if dataset_config:
+            kwargs["name"] = dataset_config
+        try:
+            load_dataset(dataset_id, **kwargs)
+            logger.info("  split '%s' cacheado.", split)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("  split '%s' indisponível (ignorado): %s", split, exc)
 
 
 def _enable_hf_offline_mode() -> None:
@@ -406,11 +435,12 @@ def run_grid_search_experiments(
 
     model_id_or_path = _resolve_model_id_for_prewarm(base_config_path)
     _prewarm_huggingface_assets(model_id_or_path)
-    _enable_hf_offline_mode()
     if dataset_overrides and dataset_overrides.get("hf_dataset_source") == "hub":
-        logger.warning(
-            "Dataset source=hub com HF_HUB_OFFLINE=1: é necessário cache local prévio do dataset."
+        _prewarm_huggingface_dataset(
+            dataset_id=dataset_overrides.get("hf_dataset_id", ""),
+            dataset_config=dataset_overrides.get("hf_dataset_config"),
         )
+    _enable_hf_offline_mode()
 
     # Carrega configuração da grade
     with open(grid_config_path, 'r', encoding='utf-8') as f:
