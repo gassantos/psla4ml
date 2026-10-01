@@ -44,6 +44,7 @@ class TaskTelemetryCollector:
     ) -> tuple[dict[str, Any], dict[str, float | None], Exception | None]:
         """Executa a tarefa e retorna sua saida junto das metricas observadas."""
         _synchronize_cuda()
+        _reset_peak_cuda()
         process = psutil.Process()
         samples: list[float] = []
         stop_sampling = threading.Event()
@@ -156,6 +157,11 @@ def _rss_mb(process: psutil.Process) -> float | None:
 def _synchronize_cuda() -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+
+
+def _reset_peak_cuda() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
 
 def _gpu_metrics() -> dict[str, float | None]:
