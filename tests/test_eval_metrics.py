@@ -78,6 +78,37 @@ class TestEvalMicroQuery:
         _, _, _, accuracy = eval_micro_query(items)
         assert isinstance(accuracy, float)
 
+    def test_false_positive_lowers_precision(self):
+        """Precisão deve ser < 1 quando um negativo é predito como positivo."""
+        items = [
+            self._make_item("q1_c1", label=1, score_class1=0.9),  # TP
+            self._make_item("q1_c2", label=0, score_class1=0.8),  # FP
+        ]
+        prec, _, _, _ = eval_micro_query(items)
+        assert prec < 1.0, "FP presente → precisão deve ser < 1.0"
+        assert prec == pytest.approx(0.5)  # 1 TP / 2 predicted
+
+    def test_false_negative_lowers_recall(self):
+        """Recall deve ser < 1 quando um positivo não é recuperado."""
+        items = [
+            self._make_item("q1_c1", label=1, score_class1=0.9),  # TP
+            self._make_item("q1_c2", label=1, score_class1=0.1),  # FN
+        ]
+        _, rec, _, _ = eval_micro_query(items)
+        assert rec < 1.0, "FN presente → recall deve ser < 1.0"
+        assert rec == pytest.approx(0.5)  # 1 TP / 2 positivos reais
+
+    def test_perfect_precision_and_recall(self):
+        """P=R=F1=1 apenas quando não há FP nem FN."""
+        items = [
+            self._make_item("q1_c1", label=1, score_class1=0.9),  # TP
+            self._make_item("q1_c2", label=0, score_class1=0.1),  # TN
+        ]
+        prec, rec, f1, _ = eval_micro_query(items)
+        assert prec == pytest.approx(1.0)
+        assert rec == pytest.approx(1.0)
+        assert f1 == pytest.approx(1.0)
+
 
 # ---------------------------------------------------------------------------
 # Testes para compute_metrics

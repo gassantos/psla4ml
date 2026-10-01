@@ -20,7 +20,7 @@ def gen_time_str(t):
 def output_value(epoch, mode, step, time, loss, info, end, config):
     try:
         delimiter = config.get("output", "delimiter")
-    except Exception:
+    except Exception:  # noqa: BLE001
         delimiter = " "
     s = ""
     s = s + str(epoch) + " "
@@ -47,7 +47,7 @@ def output_value(epoch, mode, step, time, loss, info, end, config):
 
 
 def eval_micro_query(_result_list):
-    label_dict = defaultdict(lambda: [])
+    label_dict = defaultdict(list)
     pred_dict = defaultdict(lambda: defaultdict(lambda: 0))
     pair_correct = 0
     total_pairs = len(_result_list)
@@ -56,9 +56,9 @@ def eval_micro_query(_result_list):
         label = int(item[1])
         pred = np.argmax(item[2])
         qid, cid = guid.split('_')
-        # if label > 0:
-        label_dict[qid].append(cid)
-        pred_dict[qid][cid] = pred
+        if label > 0:
+            label_dict[qid].append(cid)
+        pred_dict[qid][cid] = pred # type: ignore
         if pred == label:
             pair_correct += 1
     assert (len(pred_dict) == len(label_dict))
@@ -106,7 +106,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
     result = []
 
     for step, data in enumerate(dataset):
-        for key in data.keys():
+        for key in data:
             if isinstance(data[key], torch.Tensor):
                 data[key] = data[key].to(device)
 
@@ -114,7 +114,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
         loss, acc_result, output = results["loss"], results["acc_result"], results["output"]
         total_loss += loss.detach().item()
         result = result + output
-        cnt += 1
+        cnt += 1  # noqa: SIM113
 
         if step % output_time == 0:
             delta_t = timer() - start_time
@@ -129,7 +129,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
 
     delta_t = timer() - start_time
     output_info = output_function(acc_result, config)
-    output_value(epoch, mode, "%d/%d" % (step + 1, total_len), "%s/%s" % (
+    output_value(epoch, mode, "%d/%d" % (step + 1, total_len), "{}/{}".format(
         gen_time_str(delta_t), gen_time_str(delta_t * (total_len - step - 1) / (step + 1))),
                  "%.3lf" % (total_loss / (step + 1)), output_info, None, config)
 
@@ -139,8 +139,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
     # eval results based on query micro F1
     micro_prec_query, micro_recall_query, micro_f1_query, accuracy = eval_micro_query(result)
     loss_tmp = total_loss / (step + 1)
-    print('valid set: micro_prec_query=%.4f, micro_recall_query=%.4f, micro_f1_query=%.4f, accuracy=%.4f' %
-          (micro_prec_query, micro_recall_query, micro_f1_query, accuracy))
+    print(f'valid set: micro_prec_query={micro_prec_query:.4f}, micro_recall_query={micro_recall_query:.4f}, micro_f1_query={micro_f1_query:.4f}, accuracy={accuracy:.4f}')
     model.train()
     return {'precision': micro_prec_query, 'recall': micro_recall_query, 'f1': micro_f1_query,
             'accuracy': accuracy, 'loss': loss_tmp}
