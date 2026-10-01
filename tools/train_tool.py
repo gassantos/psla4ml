@@ -124,6 +124,7 @@ def train(parameters, config, gpu_list):
     optimizer = parameters["optimizer"]
     dataset = parameters["train_dataset"]
     global_step = parameters["global_step"]
+    _initial_global_step = global_step
     output_function = parameters["output_function"]
 
     # ── Device portável (CUDA / MPS / CPU) ──────────────────────────────────
@@ -315,16 +316,24 @@ def train(parameters, config, gpu_list):
     
     # Save profiling metrics to file
     if profiling_metrics["profiled_batches"] > 0:
-        profiling_metrics["avg_flops_per_batch"] = profiling_metrics["total_flops"] / profiling_metrics["profiled_batches"]
-        
+        profiling_metrics["avg_flops_per_batch"] = profiling_metrics["total_flops"] / profiling_metrics["profiled_batches"] # type: ignore
+        actual_training_steps = global_step - _initial_global_step
+
         metrics_path = output_path / "profiling_metrics.json"
         with open(metrics_path, "w") as f:
             json.dump({
                 "total_flops": profiling_metrics["total_flops"],
                 "avg_flops_per_batch": profiling_metrics["avg_flops_per_batch"],
                 "profiled_batches": profiling_metrics["profiled_batches"],
+                "actual_training_steps": actual_training_steps,
                 "total_gflops": profiling_metrics["total_flops"] / 1e9,
-                "avg_gflops_per_batch": profiling_metrics["avg_flops_per_batch"] / 1e9
+                "avg_gflops_per_batch": profiling_metrics["avg_flops_per_batch"] / 1e9,
+                "actual_total_gflops": profiling_metrics["avg_flops_per_batch"] / 1e9 * actual_training_steps,
             }, f, indent=2)
-        
-        logger.info(f"Profiling complete: {profiling_metrics['avg_flops_per_batch'] / 1e9:.2f} GFLOPs/batch avg")
+
+        logger.info(
+            "Profiling complete: %.2f GFLOPs/batch avg, %d steps → %.1f TFLOPs total",
+            profiling_metrics["avg_flops_per_batch"] / 1e9,
+            actual_training_steps,
+            profiling_metrics["avg_flops_per_batch"] / 1e9 * actual_training_steps / 1000,
+        )

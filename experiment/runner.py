@@ -298,9 +298,18 @@ def execute_experiment(
         try:
             with open(profiling_path, "r") as f:
                 profiling_data = json.load(f)
-                total_gflops = profiling_data.get("total_gflops", 0)
                 avg_gflops_per_batch = profiling_data.get("avg_gflops_per_batch", 0)
-                logger.info(f"Loaded profiling metrics: {avg_gflops_per_batch:.2f} GFLOPs/batch")
+                _actual_steps = profiling_data.get("actual_training_steps", 0)
+                if _actual_steps > 0:
+                    total_gflops = avg_gflops_per_batch * _actual_steps
+                else:
+                    total_gflops = profiling_data.get("total_gflops", 0)
+                logger.info(
+                    "Loaded profiling metrics: %.2f GFLOPs/batch × %d steps = %.1f GFLOPs total",
+                    avg_gflops_per_batch,
+                    _actual_steps,
+                    total_gflops,
+                )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Could not load profiling metrics: {e}")
             total_gflops = estimate_bert_flops(seq_len=256) # type: ignore
