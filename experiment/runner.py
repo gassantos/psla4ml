@@ -44,6 +44,7 @@ from tools.eval_tool import (
 from utils.device import get_torch_device
 from utils.util import print_system_info
 
+from .bootstrap_lock import BootstrapLock
 from .evaluation import extract_eval_metrics
 from .helpers import (
     TeeStream,
@@ -226,7 +227,8 @@ def execute_experiment(
         _failure_stage = "create_config"
         config = create_config(config_path)
         _failure_stage = "init"
-        parameters = init_fn(config, gpu_list, None, "train")
+        with BootstrapLock():
+            parameters = init_fn(config, gpu_list, None, "train")
         _failure_stage = "train"
         train_fn(parameters, config, gpu_list)
         status = "success"
