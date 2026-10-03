@@ -14,7 +14,7 @@ def gen_time_str(t):
     t = int(t)
     minute = t // 60
     second = t % 60
-    return '%2d:%02d' % (minute, second)
+    return '%2d:%02d' % (minute, second)  # noqa: UP031
 
 
 def output_value(epoch, mode, step, time, loss, info, end, config):
@@ -61,7 +61,9 @@ def eval_micro_query(_result_list):
         pred_dict[qid][cid] = pred # type: ignore
         if pred == label:
             pair_correct += 1
-    assert (len(pred_dict) == len(label_dict))
+
+    # Nem toda query terá necessariamente exemplos positivos no split atual.
+    # Nesses casos, ela existe em pred_dict mas pode não existir em label_dict.
 
     correct = 0
     label = 0
@@ -119,8 +121,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
         if step % output_time == 0:
             delta_t = timer() - start_time
 
-            output_value(epoch, mode, "%d/%d" % (step + 1, total_len), "%s/%s" % (
-                gen_time_str(delta_t), gen_time_str(delta_t * (total_len - step - 1) / (step + 1))),
+            output_value(epoch, mode, "%d/%d" % (step + 1, total_len), f"{gen_time_str(delta_t)}/{gen_time_str(delta_t * (total_len - step - 1) / (step + 1))}",
                          "%.3lf" % (total_loss / (step + 1)), output_info, '\r', config)
 
     if step == -1:
@@ -129,8 +130,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
 
     delta_t = timer() - start_time
     output_info = output_function(acc_result, config)
-    output_value(epoch, mode, "%d/%d" % (step + 1, total_len), "{}/{}".format(
-        gen_time_str(delta_t), gen_time_str(delta_t * (total_len - step - 1) / (step + 1))),
+    output_value(epoch, mode, "%d/%d" % (step + 1, total_len), f"{gen_time_str(delta_t)}/{gen_time_str(delta_t * (total_len - step - 1) / (step + 1))}",
                  "%.3lf" % (total_loss / (step + 1)), output_info, None, config)
 
     writer.add_scalar(config.get("output", "model_name") + "_eval_epoch", float(total_loss) / (step + 1),
@@ -158,8 +158,9 @@ def parse_gru_results(input_file: str, output_file: str) -> None:
         input_file: Arquivo JSON com resultados brutos do GRU/LSTM
         output_file: Arquivo JSON de saída no formato task1
     """
-    from pathlib import Path as _Path
     import json as _json
+    from pathlib import Path as _Path
+
     from utils.paths import PathManager
 
     output_path = _Path(output_file)
@@ -190,8 +191,8 @@ def parse_gru_results(input_file: str, output_file: str) -> None:
                 result[query_file] = []
             result[query_file].append(f"{doc}.txt")
 
-    for key in result:
-        result[key] = sorted(set(result[key]))
+    for key, value in result.items():
+        result[key] = sorted(set(value))
 
     PathManager.ensure_dir(output_path.parent)
     with open(output_file, "w") as f:
@@ -233,7 +234,7 @@ def compute_metrics(labels_file: str, predicted_file: str, k_values: list = None
 
     # Normaliza chaves (remove .txt)
     def _norm(key: str) -> str:
-        return key[:-4] if key.endswith(".txt") else key
+        return key.removesuffix(".txt")
 
     labels = {_norm(k): [_norm(v) for v in vs] for k, vs in labels.items()}
     predicted = {_norm(k): [_norm(v) for v in vs] for k, vs in predicted.items()}
@@ -309,8 +310,8 @@ def evaluate_predictions(
     Returns:
         Dicionário com todas as métricas calculadas
     """
-    from pathlib import Path as _Path
     import json as _json
+    from pathlib import Path as _Path
 
     print("Avaliando predições...")
     print(f"  Ground truth : {labels_file}")
@@ -409,6 +410,6 @@ def convert_test_results_to_task1(test_results_file: str) -> dict:
                 result[query_file] = []
             result[query_file].append(f"{doc}.txt")
 
-    for key in result:
-        result[key] = sorted(set(result[key]))
+    for key, value in result.items():
+        result[key] = sorted(set(value))
     return result

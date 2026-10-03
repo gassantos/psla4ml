@@ -11,13 +11,10 @@ Coberturas:
 """
 
 import json
+
 import pytest
-import numpy as np
-import tempfile
-import os
 
-from tools.eval_tool import eval_micro_query, compute_metrics
-
+from tools.eval_tool import compute_metrics, eval_micro_query
 
 # ---------------------------------------------------------------------------
 # Testes para eval_micro_query
@@ -108,6 +105,20 @@ class TestEvalMicroQuery:
         assert prec == pytest.approx(1.0)
         assert rec == pytest.approx(1.0)
         assert f1 == pytest.approx(1.0)
+
+    def test_query_with_only_negative_pairs_does_not_crash(self):
+        """Queries sem rótulo positivo não devem disparar AssertionError."""
+        items = [
+            self._make_item("q1_c1", label=1, score_class1=0.9),
+            self._make_item("q1_c2", label=0, score_class1=0.1),
+            self._make_item("q2_c1", label=0, score_class1=0.2),
+            self._make_item("q2_c2", label=0, score_class1=0.3),
+        ]
+        prec, rec, f1, acc = eval_micro_query(items)
+        assert 0.0 <= prec <= 1.0
+        assert 0.0 <= rec <= 1.0
+        assert 0.0 <= f1 <= 1.0
+        assert 0.0 <= acc <= 1.0
 
 
 # ---------------------------------------------------------------------------
