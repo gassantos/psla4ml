@@ -8,12 +8,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import psutil
+import psutil  # type: ignore
 import torch
+from codecarbon import EmissionsTracker  # type: ignore
 
 from .helpers import METRICS_DIR, compute_cost_usd
 
 TrackerFactory = Callable[..., Any]
+
+_CUDA_AVAILABLE: bool | None = None
+_CUDA_AVAILABLE_LOCK = threading.Lock()
 
 
 class TaskTelemetryCollector:
@@ -22,11 +26,12 @@ class TaskTelemetryCollector:
     def __init__(
         self,
         *,
-        enable_emissions: bool = False,
+        enable_emissions: bool = True,
         environment_cost_per_hour_usd: float | None = None,
         tracker_factory: TrackerFactory | None = None,
         sample_interval_sec: float = 0.1,
         emissions_output_dir: Path | None = None,
+        prewarm_cuda_probe: bool = True,
     ) -> None:
         self._enable_emissions = enable_emissions
         self._environment_cost_per_hour_usd = environment_cost_per_hour_usd
@@ -34,6 +39,9 @@ class TaskTelemetryCollector:
         self._uses_default_tracker = tracker_factory is None
         self._sample_interval_sec = sample_interval_sec
         self._emissions_output_dir = emissions_output_dir or METRICS_DIR
+        # Evita inflar a primeira tarefa com custo de inicialização de probe CUDA.
+        if prewarm_cuda_probe and _cuda_available():
+            _warmup_cuda_runtime()
 
     def measure(
         self,
@@ -43,6 +51,9 @@ class TaskTelemetryCollector:
         attempt_id: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, float | None], Exception | None]:
         """Executa a tarefa e retorna sua saida junto das metricas observadas."""
+        # Mede desde o início da tentativa instrumentada para manter
+        # coerência com started_at/completed_at do workflow.
+        started = time.perf_counter()
         _synchronize_cuda()
         _reset_peak_cuda()
         process = psutil.Process()
@@ -54,7 +65,6 @@ class TaskTelemetryCollector:
             daemon=True,
         )
         tracker = self._start_tracker(task_id, attempt_id)
-        started = time.perf_counter()
         sampler.start()
         output: dict[str, Any] = {}
         error: Exception | None = None
@@ -64,12 +74,12 @@ class TaskTelemetryCollector:
             error = exc
         finally:
             _synchronize_cuda()
-            elapsed = time.perf_counter() - started
             stop_sampling.set()
             sampler.join(timeout=2)
 
         energy_kwh, emissions_kg_co2 = self._stop_tracker(tracker)
         gpu = _gpu_metrics()
+        elapsed = time.perf_counter() - started
         peak_ram_mb = max(samples) if samples else _rss_mb(process)
         metrics = {
             "task_time_sec": elapsed,
@@ -121,7 +131,6 @@ def _default_tracker(
     task_id: str | None,
     attempt_id: str | None,
 ) -> Any:
-    from codecarbon import EmissionsTracker
 
     safe_task_id = task_id or "task"
     safe_attempt_id = attempt_id or "attempt"
@@ -155,22 +164,46 @@ def _rss_mb(process: psutil.Process) -> float | None:
 
 
 def _synchronize_cuda() -> None:
-    if torch.cuda.is_available():
+    if _cuda_available():
         torch.cuda.synchronize()
 
 
 def _reset_peak_cuda() -> None:
-    if torch.cuda.is_available():
+    if _cuda_available():
         torch.cuda.reset_peak_memory_stats()
 
 
 def _gpu_metrics() -> dict[str, float | None]:
-    if not torch.cuda.is_available():
+    if not _cuda_available():
         return {"vram_mb": None, "peak_vram_mb": None}
     return {
         "vram_mb": torch.cuda.memory_allocated() / (1024 ** 2),
         "peak_vram_mb": torch.cuda.max_memory_allocated() / (1024 ** 2),
     }
+
+
+def _warmup_cuda_runtime() -> None:
+    try:
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.memory_allocated()
+        torch.cuda.max_memory_allocated()
+    except Exception:  # noqa: BLE001
+        # Se o warmup falhar, o coletor continua funcional e faz fallback gracioso.
+        return
+
+
+def _cuda_available() -> bool:
+    global _CUDA_AVAILABLE
+    if _CUDA_AVAILABLE is not None:
+        return _CUDA_AVAILABLE
+    with _CUDA_AVAILABLE_LOCK:
+        if _CUDA_AVAILABLE is None:
+            try:
+                _CUDA_AVAILABLE = bool(torch.cuda.is_available())
+            except Exception:  # noqa: BLE001
+                _CUDA_AVAILABLE = False
+    return _CUDA_AVAILABLE
 
 
 def _numeric(value: Any) -> float | None:
