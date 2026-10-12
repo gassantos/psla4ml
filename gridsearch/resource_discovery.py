@@ -40,9 +40,11 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import psutil
+
+from experiment.helpers import normalize_environment_label
 
 logger = logging.getLogger(__name__)
 
@@ -378,7 +380,7 @@ def estimate_energy_rate_kwh_per_hour(
             or r.get("grid_params", {}).get("environment")
             or r.get("selected_environment")
         )
-        if env != environment:
+        if normalize_environment_label(str(env)) != normalize_environment_label(str(environment)):
             continue
         resources = r.get("resources", {})
         try:

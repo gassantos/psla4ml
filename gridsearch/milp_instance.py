@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from experiment.helpers import normalize_environment_label
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROCESSOR_TYPES = ("CPU", "GPU", "TPU")
@@ -168,7 +170,7 @@ def _energy_rate_from_results(
             or r.get("grid_params", {}).get("environment")
             or r.get("selected_environment")
         )
-        if env != environment:
+        if normalize_environment_label(str(env)) != normalize_environment_label(str(environment)):
             continue
         resources = r.get("resources", {})
         try:

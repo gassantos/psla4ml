@@ -265,7 +265,12 @@ def run_single_experiment(
         Dicionário com resultados do experimento
     """
     # Imports lazy evitam inicialização de CUDA no processo principal.
-    from experiment.helpers import get_machine_name, load_config
+    from experiment.helpers import (
+        detect_execution_environment,
+        get_machine_name,
+        load_config,
+        normalize_environment_label,
+    )
     from experiment.persistence import append_workflow_csv_rows, write_workflow_run
     from experiment.task_executor import SequentialWorkflowExecutor
     from experiment.task_telemetry import TaskTelemetryCollector
@@ -275,7 +280,8 @@ def run_single_experiment(
     )
 
     logger.info(f"[{experiment_idx}] Iniciando experimento com parâmetros: {params}")
-    configured_environment = params.get("environment")
+    configured_environment = normalize_environment_label(params.get("environment")) if params.get("environment") else None
+    selected_environment = detect_execution_environment()
     machine_name = get_machine_name()
     workflow_config = _build_huggingface_workflow_config(
         experiment_idx,
@@ -316,7 +322,7 @@ def run_single_experiment(
                 "grid_experiment_idx": experiment_idx,
                 "grid_params": params,
                 "parallel_workers": parallel_workers,
-                "selected_environment": machine_name,
+                "selected_environment": selected_environment,
                 "configured_environment": configured_environment,
                 "resource_machine_name": machine_name,
             },
@@ -329,7 +335,7 @@ def run_single_experiment(
             params=params,
         )
         result_data["parallel_workers"] = parallel_workers
-        result_data["selected_environment"] = machine_name
+        result_data["selected_environment"] = selected_environment
         result_data["resource_machine_name"] = machine_name
         if configured_environment is not None:
             result_data["configured_environment"] = configured_environment
@@ -347,7 +353,7 @@ def run_single_experiment(
             "grid_experiment_idx": experiment_idx,
             "grid_params": params,
             "status": "failed",
-            "selected_environment": machine_name,
+            "selected_environment": selected_environment,
             "resource_machine_name": machine_name,
             "configured_environment": configured_environment,
             "error_type": classify_error_type(e),

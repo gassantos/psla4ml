@@ -84,6 +84,39 @@ def get_machine_name() -> str:
     return node or "unknown-machine"
 
 
+def normalize_environment_label(value: str | None) -> str:
+    """Normaliza um rótulo de ambiente para o conjunto canônico do projeto.
+
+    Valores suportados: ``LOCAL``, ``COLAB``, ``AWS``, ``AZURE``, ``GCP``.
+    """
+    raw = (value or "").strip().upper()
+    if raw in {"LOCAL", "COLAB", "AWS", "AZURE", "GCP"}:
+        return raw
+    return "LOCAL"
+
+
+def detect_execution_environment() -> str:
+    """Detecta o ambiente real de execução da máquina atual.
+
+    Regras:
+    - ``COLAB``: execução no Google Colab.
+    - ``AZURE``: variáveis típicas de App Service/Functions/identidade Azure.
+    - ``GCP``: variáveis típicas de Cloud Run/Functions/App Engine/GCE.
+    - ``AWS``: variáveis típicas de Lambda/ECS/EC2.
+    - fallback ``LOCAL``.
+    """
+    env = os.environ
+    if any(env.get(key) for key in ("COLAB_RELEASE_TAG", "COLAB_GPU", "COLAB_BACKEND_VERSION")):
+        return "COLAB"
+    if any(env.get(key) for key in ("WEBSITE_SITE_NAME", "FUNCTIONS_WORKER_RUNTIME", "AZURE_HTTP_USER_AGENT", "IDENTITY_ENDPOINT")):
+        return "AZURE"
+    if any(env.get(key) for key in ("GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "K_SERVICE", "FUNCTION_TARGET", "GAE_ENV")):
+        return "GCP"
+    if any(env.get(key) for key in ("AWS_EXECUTION_ENV", "AWS_REGION", "AWS_DEFAULT_REGION", "LAMBDA_TASK_ROOT", "ECS_CONTAINER_METADATA_URI", "ECS_CONTAINER_METADATA_URI_V4")):
+        return "AWS"
+    return "LOCAL"
+
+
 def load_config(path: str) -> configparser.ConfigParser:
     """Lê e retorna um ConfigParser padrão da stdlib a partir do arquivo.
 
