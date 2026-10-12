@@ -163,7 +163,11 @@ def _energy_rate_from_results(
     for r in results:
         if r.get("status") != "success":
             continue
-        env = r.get("selected_environment") or r.get("grid_params", {}).get("environment")
+        env = (
+            r.get("configured_environment")
+            or r.get("grid_params", {}).get("environment")
+            or r.get("selected_environment")
+        )
         if env != environment:
             continue
         resources = r.get("resources", {})

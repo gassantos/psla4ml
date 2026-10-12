@@ -265,7 +265,7 @@ def run_single_experiment(
         Dicionário com resultados do experimento
     """
     # Imports lazy evitam inicialização de CUDA no processo principal.
-    from experiment.helpers import load_config
+    from experiment.helpers import get_machine_name, load_config
     from experiment.persistence import append_workflow_csv_rows, write_workflow_run
     from experiment.task_executor import SequentialWorkflowExecutor
     from experiment.task_telemetry import TaskTelemetryCollector
@@ -275,6 +275,8 @@ def run_single_experiment(
     )
 
     logger.info(f"[{experiment_idx}] Iniciando experimento com parâmetros: {params}")
+    configured_environment = params.get("environment")
+    machine_name = get_machine_name()
     workflow_config = _build_huggingface_workflow_config(
         experiment_idx,
         params,
@@ -314,7 +316,9 @@ def run_single_experiment(
                 "grid_experiment_idx": experiment_idx,
                 "grid_params": params,
                 "parallel_workers": parallel_workers,
-                "selected_environment": params.get("environment"),
+                "selected_environment": machine_name,
+                "configured_environment": configured_environment,
+                "resource_machine_name": machine_name,
             },
         )
         result_data = _project_workflow_result(
@@ -325,8 +329,10 @@ def run_single_experiment(
             params=params,
         )
         result_data["parallel_workers"] = parallel_workers
-        if "environment" in params:
-            result_data["selected_environment"] = params["environment"]
+        result_data["selected_environment"] = machine_name
+        result_data["resource_machine_name"] = machine_name
+        if configured_environment is not None:
+            result_data["configured_environment"] = configured_environment
         if workflow_run.status != "success":
             raise RuntimeError("Workflow T0-T2-T5 falhou.")
 
@@ -341,6 +347,9 @@ def run_single_experiment(
             "grid_experiment_idx": experiment_idx,
             "grid_params": params,
             "status": "failed",
+            "selected_environment": machine_name,
+            "resource_machine_name": machine_name,
+            "configured_environment": configured_environment,
             "error_type": classify_error_type(e),
             "error": str(e),
             "traceback": traceback.format_exc(),

@@ -11,9 +11,8 @@ Autor: Gustavo Alexandre
 import configparser
 import logging
 import os
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
+import platform
+from datetime import datetime
 
 from utils.paths import PathManager
 
@@ -69,6 +68,20 @@ def compute_cost_usd(
 def now_iso() -> str:
     """Retorna o instante atual em formato ISO 8601 com timezone UTC."""
     return datetime.now().astimezone().isoformat()
+
+
+def get_machine_name() -> str:
+    """Retorna o identificador da máquina de execução de forma estável.
+
+    Prioriza variáveis de ambiente comuns em cloud e desktop e faz fallback
+    para ``platform.node()`` quando necessário.
+    """
+    for key in ("PSLA4ML_MACHINE_NAME", "COMPUTERNAME", "HOSTNAME"):
+        value = os.getenv(key)
+        if value and value.strip():
+            return value.strip()
+    node = platform.node().strip()
+    return node or "unknown-machine"
 
 
 def load_config(path: str) -> configparser.ConfigParser:
