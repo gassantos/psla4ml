@@ -83,6 +83,32 @@ def test_run_single_experiment_attaches_huggingface_workflow_metadata(monkeypatc
     assert json.dumps(result["workflow"])
 
 
+def test_run_single_experiment_uses_machine_name_as_selected_environment(monkeypatch):
+    monkeypatch.setenv("PSLA4ML_MACHINE_NAME", "vm-azure-eastus-01")
+    monkeypatch.setattr(
+        "experiment.xla_launcher.launch_experiment",
+        lambda **_kwargs: {
+            "experiment": {"id": "worker-result", "status": "success"},
+            "resources": {},
+        },
+    )
+    monkeypatch.setattr(
+        "experiment.workflow_templates._build_huggingface_dataset_probe",
+        lambda *_args, **_kwargs: lambda: {"records": 1, "fields": [], "source": "hub"},
+    )
+
+    result = run_single_experiment(
+        experiment_idx=9,
+        config_path="ignored.config",
+        params={"environment": "colab"},
+        dataset_overrides={"hf_dataset_source": "hub", "hf_dataset_id": "nyu-mll/glue"},
+    )
+
+    assert result["selected_environment"] == "vm-azure-eastus-01"
+    assert result["resource_machine_name"] == "vm-azure-eastus-01"
+    assert result["configured_environment"] == "colab"
+
+
 def test_run_single_experiment_declares_local_json_ingestion_metadata(monkeypatch):
     def fake_launch_experiment(**_kwargs):
         return {"experiment": {"id": "worker-result", "status": "success"}, "resources": {}}
