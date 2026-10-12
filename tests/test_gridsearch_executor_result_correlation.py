@@ -83,8 +83,9 @@ def test_run_single_experiment_attaches_huggingface_workflow_metadata(monkeypatc
     assert json.dumps(result["workflow"])
 
 
-def test_run_single_experiment_uses_machine_name_as_selected_environment(monkeypatch):
+def test_run_single_experiment_uses_execution_environment_as_selected_environment(monkeypatch):
     monkeypatch.setenv("PSLA4ML_MACHINE_NAME", "vm-azure-eastus-01")
+    monkeypatch.setattr("experiment.helpers.detect_execution_environment", lambda: "LOCAL")
     monkeypatch.setattr(
         "experiment.xla_launcher.launch_experiment",
         lambda **_kwargs: {
@@ -104,9 +105,9 @@ def test_run_single_experiment_uses_machine_name_as_selected_environment(monkeyp
         dataset_overrides={"hf_dataset_source": "hub", "hf_dataset_id": "nyu-mll/glue"},
     )
 
-    assert result["selected_environment"] == "vm-azure-eastus-01"
+    assert result["selected_environment"] == "LOCAL"
     assert result["resource_machine_name"] == "vm-azure-eastus-01"
-    assert result["configured_environment"] == "colab"
+    assert result["configured_environment"] == "COLAB"
 
 
 def test_run_single_experiment_declares_local_json_ingestion_metadata(monkeypatch):
