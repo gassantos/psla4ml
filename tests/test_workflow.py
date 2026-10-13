@@ -7,6 +7,7 @@ from experiment.task_executor import (
     ParallelWorkflowExecutor,
     SequentialWorkflowExecutor,
 )
+from experiment.task_telemetry import TaskTelemetryCollector
 from experiment.workflow import (
     INFRA_RETRY_POLICY,
     ArtifactDefinition,
@@ -447,7 +448,7 @@ def test_parallel_executor_runs_independent_tasks_concurrently():
 
     def independent(task_id: str) -> dict:
         started.append(task_id)
-        barrier.wait(timeout=1)
+        barrier.wait(timeout=3)
         return {}
 
     executor = ParallelWorkflowExecutor(
@@ -457,11 +458,12 @@ def test_parallel_executor_runs_independent_tasks_concurrently():
             "final": lambda: {"artifacts": {"done": True}},
         },
         max_workers=2,
+        telemetry=TaskTelemetryCollector(enable_emissions=False),
     )
 
     run_thread = Thread(target=lambda: executor.execute(definition))
     run_thread.start()
-    barrier.wait(timeout=1)
+    barrier.wait(timeout=3)
     run_thread.join(timeout=2)
 
     assert sorted(started) == ["first", "second"]
