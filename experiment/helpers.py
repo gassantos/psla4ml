@@ -90,9 +90,11 @@ def normalize_environment_label(value: str | None) -> str:
     Valores suportados: ``LOCAL``, ``COLAB``, ``AWS``, ``AZURE``, ``GCP``.
     """
     raw = (value or "").strip().upper()
-    if raw in {"LOCAL", "COLAB", "AWS", "AZURE", "GCP"}:
+
+    if raw in {"COLAB", "AZURE", "GCP", "AWS"}:
         return raw
-    return "LOCAL"
+    else:
+        return "LOCAL"
 
 
 def detect_execution_environment() -> str:

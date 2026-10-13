@@ -280,8 +280,8 @@ def run_single_experiment(
     )
 
     logger.info(f"[{experiment_idx}] Iniciando experimento com parâmetros: {params}")
-    configured_environment = normalize_environment_label(params.get("environment")) if params.get("environment") else None
-    selected_environment = detect_execution_environment()
+    requested_environment = normalize_environment_label(params.get("environment")) if params.get("environment") else None
+    configured_environment = detect_execution_environment()
     machine_name = get_machine_name()
     workflow_config = _build_huggingface_workflow_config(
         experiment_idx,
@@ -322,8 +322,9 @@ def run_single_experiment(
                 "grid_experiment_idx": experiment_idx,
                 "grid_params": params,
                 "parallel_workers": parallel_workers,
-                "selected_environment": selected_environment,
+                "selected_environment": machine_name,
                 "configured_environment": configured_environment,
+                "requested_environment": requested_environment,
                 "resource_machine_name": machine_name,
             },
         )
@@ -335,10 +336,11 @@ def run_single_experiment(
             params=params,
         )
         result_data["parallel_workers"] = parallel_workers
-        result_data["selected_environment"] = selected_environment
+        result_data["selected_environment"] = machine_name
         result_data["resource_machine_name"] = machine_name
-        if configured_environment is not None:
-            result_data["configured_environment"] = configured_environment
+        result_data["configured_environment"] = configured_environment
+        if requested_environment is not None:
+            result_data["requested_environment"] = requested_environment
         if workflow_run.status != "success":
             raise RuntimeError("Workflow T0-T2-T5 falhou.")
 
@@ -353,9 +355,10 @@ def run_single_experiment(
             "grid_experiment_idx": experiment_idx,
             "grid_params": params,
             "status": "failed",
-            "selected_environment": selected_environment,
+            "selected_environment": machine_name,
             "resource_machine_name": machine_name,
             "configured_environment": configured_environment,
+            "requested_environment": requested_environment,
             "error_type": classify_error_type(e),
             "error": str(e),
             "traceback": traceback.format_exc(),

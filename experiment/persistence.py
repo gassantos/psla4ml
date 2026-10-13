@@ -151,6 +151,9 @@ def append_workflow_csv_rows(
     context: dict[str, Any] | None = None,
 ) -> Path:
     """Acrescenta uma linha por tentativa ao sumário CSV de experimentos."""
+    safe_context = dict(context or {})
+    safe_context.pop("environment", None)
+    safe_context.pop("requested_environment", None)
     csv_path = _workflow_summary_csv_path(device_type)
     headers = [
         "experiment_run_id", "definition_name", "workflow_status",
@@ -210,7 +213,7 @@ def append_workflow_csv_rows(
                     "is_infra_error": attempt.error_type == "InfraError" if attempt.error_type else False,
                     "attempt_count": attempt_count,
                     "is_final_attempt": attempt.attempt_number == attempt_count,
-                    "experiment_context_json": json.dumps(context or {}, ensure_ascii=False, sort_keys=True),
+                    "experiment_context_json": json.dumps(safe_context, ensure_ascii=False, sort_keys=True),
                 })
     return csv_path
 
