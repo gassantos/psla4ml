@@ -26,6 +26,11 @@ PathManager.ensure_dir(METRICS_DIR)
 ENERGY_COST_USD_PER_KWH = float(os.getenv("ENERGY_COST_USD_PER_KWH", "0.12"))
 
 
+def _current_energy_cost_usd_per_kwh() -> float:
+    """Retorna a tarifa atual em USD/kWh considerando o ambiente de execução."""
+    return float(os.getenv("ENERGY_COST_USD_PER_KWH", str(ENERGY_COST_USD_PER_KWH)))
+
+
 def compute_cost_usd(
     energy_kwh: "float | None",
     train_time_sec: "float | None" = None,
@@ -62,7 +67,7 @@ def compute_cost_usd(
         return (train_time_sec / 3600.0) * environment_cost_per_hour_usd
     if energy_kwh is None:
         return None
-    return energy_kwh * ENERGY_COST_USD_PER_KWH
+    return energy_kwh * _current_energy_cost_usd_per_kwh()
 
 
 def now_iso() -> str:
@@ -90,7 +95,6 @@ def normalize_environment_label(value: str | None) -> str:
     Valores suportados: ``LOCAL``, ``COLAB``, ``AWS``, ``AZURE``, ``GCP``.
     """
     raw = (value or "").strip().upper()
-
     if raw in {"COLAB", "AZURE", "GCP", "AWS"}:
         return raw
     else:
