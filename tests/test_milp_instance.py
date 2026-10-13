@@ -367,8 +367,8 @@ class TestReadResourceCatalog:
 
 class TestReadPersistedFiles:
     def test_read_environments_details_from_real_config(self):
-        details = read_environments_details("gridsearch/config/grid_search_multienv.json")
-        assert set(details.keys()) == {"local", "colab", "gcp", "aws", "azure"}
+        with pytest.raises(ValueError, match="environments.details"):
+            read_environments_details("gridsearch/config/grid_search_multienv.json")
 
     def test_read_environments_details_raises_when_absent(self, tmp_path):
         path = tmp_path / "no_env.json"

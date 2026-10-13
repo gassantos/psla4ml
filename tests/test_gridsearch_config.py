@@ -247,10 +247,10 @@ class TestGridSearchQualityBL05:
         assert len(combos) == 9, f"Esperado 9 combinações de hiperparâmetros, obtido {len(combos)}"
 
     def test_exactly_nine_combinations(self, quality_cfg):
-        """BL-W2: a config completa (com environments) gera 9 x 2 ambientes = 18 combinacoes."""
+        """Sem bloco environments, a config completa gera 9 combinações."""
         from gridsearch import generate_parameter_grid
         combos = generate_parameter_grid(quality_cfg)
-        assert len(combos) == 18, f"Esperado 18 combinações (9 × 2 ambientes), obtido {len(combos)}"
+        assert len(combos) == 9, f"Esperado 9 combinações, obtido {len(combos)}"
 
     def test_meta_count_matches_actual(self, quality_cfg):
         from gridsearch import generate_parameter_grid

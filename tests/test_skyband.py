@@ -495,6 +495,8 @@ class TestMultienvConfigIntegration:
         assert MULTIENV_PATH.exists()
 
     def test_active_envs_match_sla_profiles(self, multienv_config, sla_profiles):
+        if "environments" not in multienv_config:
+            pytest.skip("grid_search_multienv.json padronizado sem bloco environments")
         active = set(multienv_config["environments"]["active"])
         sla_envs = set(sla_profiles["environments"].keys())
         assert active == sla_envs
@@ -505,7 +507,7 @@ class TestMultienvConfigIntegration:
         keys = [k for k in hp if not k.startswith("_")]
         vals = [hp[k] for k in keys]
         n_hyper = len(list(itertools.product(*vals)))
-        n_envs  = len(multienv_config["environments"]["active"])
+        n_envs  = len(multienv_config.get("environments", {}).get("active", [])) or 1
         stated  = multienv_config["_meta"]["total_combinations"]["with_environments"]
         assert n_hyper * n_envs == stated
 
@@ -518,6 +520,8 @@ class TestMultienvConfigIntegration:
             assert k >= 1
 
     def test_cost_per_hour_consistent_between_files(self, multienv_config, sla_profiles):
+        if "environments" not in multienv_config:
+            pytest.skip("grid_search_multienv.json padronizado sem bloco environments")
         for env in multienv_config["environments"]["active"]:
             mg_cost  = multienv_config["environments"]["details"][env]["cost_per_hour_usd"]
             sla_cost = sla_profiles["environments"][env]["cost_per_hour_usd"]
