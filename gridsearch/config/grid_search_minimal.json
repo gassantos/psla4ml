@@ -19,7 +19,7 @@
       }
     }
   },
-  "description": "Grid Search Mínimo - Teste de Pipeline com 6 combinações (3 hiperparâmetros × 2 ambientes)",
+  "description": "Grid Search Mínimo - Teste de Pipeline com 3 combinações",
   "experiment_base": "config/experiments/BertPLI.config",
   "output_dir": "output/experiments/grid_search",
   "parallel_workers": 1,
@@ -30,32 +30,9 @@
     "optimizer": ["adam", "adamw", "bert_adam"]
   },
 
-  "environments": {
-    "_comment": "BL-W2: capacidade por ambiente (parallel_workers) consumida por gridsearch/executor.py::_gpu_for",
-    "active": ["local", "colab"],
-    "details": {
-      "local": {
-        "label": "Local RTX 3090",
-        "gpu": "NVIDIA RTX 3090",
-        "vram_gb": 24,
-        "cost_per_hour_usd": 0.04,
-        "co2_factor_kg_per_kwh": 0.233,
-        "parallel_workers": 2
-      },
-      "colab": {
-        "label": "Google Colab T4",
-        "gpu": "NVIDIA T4",
-        "vram_gb": 16,
-        "cost_per_hour_usd": 0.00,
-        "co2_factor_kg_per_kwh": 0.082,
-        "parallel_workers": 1
-      }
-    }
-  },
-  
+
   "notes": [
-    "Configuração MÍNIMA para teste de pipeline: 1 × 1 × 3 (otimizadores) × 2 (ambientes) = 6 experimentos",
-    "Inclui a dimensão 'environment' (BL-W2) para validar a alocação de GPU consciente da capacidade por ambiente",
+    "Configuração MÍNIMA para teste de pipeline: 1 × 1 × 3 (otimizadores) = 3 experimentos",
     "Tempo estimado: ~30 minutos por experimento (depende do dataset)",
     "Memória estimada: ~4.5 GB",
     "Objetivo: Verificar que todo o fluxo funciona antes de rodar grids maiores"

@@ -34,9 +34,9 @@
     "base_config": "config/experiments/BertPLI.config",
     "total_combinations": {
       "hyperparameters_only": 1944,
-      "with_environments": 9720,
-      "formula": "4 (lr) × 3 (bs) × 2 (opt) × 3 (dropout) × 3 (seed) × 3 (max_seq_length) × 3 (num_epochs) × 5 (envs) = 9720",
-      "note": "BL-05: max_seq_length e num_epochs adicionados. Cada combinação hiperparâmetro+ambiente gera um ponto no espaço multicritério Skyband"
+      "with_environments": 1944,
+      "formula": "4 (lr) × 3 (bs) × 2 (opt) × 3 (dropout) × 3 (seed) × 3 (max_seq_length) × 3 (num_epochs) = 1944",
+      "note": "BL-05: max_seq_length e num_epochs adicionados; descoberta de ambiente deve ocorrer somente em runtime"
     }
   },
 
@@ -51,87 +51,14 @@
     "num_epochs":     [2, 3, 5]
   },
 
-  "environments": {
-    "_comment": "Chaves devem corresponder exatamente às chaves de 'environments' em sla_profiles.json",
-    "active": ["local", "colab", "gcp", "aws", "azure"],
-    "details": {
-      "local": {
-        "label": "Local RTX 3090",
-        "gpu": "NVIDIA RTX 3090",
-        "vram_gb": 24,
-        "cost_per_hour_usd": 0.04,
-        "co2_factor_kg_per_kwh": 0.233,
-        "parallel_workers": 2,
-        "estimated_time_hours": {
-          "per_experiment": 0.5,
-          "total_216_experiments": 54.0,
-          "note": "Estimativa com parallel=2; depende de batch_size e epochs"
-        }
-      },
-      "colab": {
-        "label": "Google Colab T4",
-        "gpu": "NVIDIA T4",
-        "vram_gb": 16,
-        "cost_per_hour_usd": 0.00,
-        "co2_factor_kg_per_kwh": 0.082,
-        "parallel_workers": 1,
-        "estimated_time_hours": {
-          "per_experiment": 0.75,
-          "total_216_experiments": 162.0,
-          "note": "Sessão limitada a ~12h; necessita retomada com --resume"
-        }
-      },
-      "gcp": {
-        "label": "GCP n1-standard-4 + T4",
-        "gpu": "NVIDIA T4",
-        "vram_gb": 16,
-        "cost_per_hour_usd": 0.35,
-        "co2_factor_kg_per_kwh": 0.082,
-        "parallel_workers": 2,
-        "estimated_time_hours": {
-          "per_experiment": 0.75,
-          "total_216_experiments": 81.0,
-          "note": "Preço spot reduz custo em ~70%"
-        }
-      },
-      "aws": {
-        "label": "AWS g4dn.xlarge (T4)",
-        "gpu": "NVIDIA T4",
-        "vram_gb": 16,
-        "cost_per_hour_usd": 0.526,
-        "co2_factor_kg_per_kwh": 0.385,
-        "parallel_workers": 2,
-        "estimated_time_hours": {
-          "per_experiment": 0.75,
-          "total_216_experiments": 81.0,
-          "note": "Instância Spot reduz custo em ~60%"
-        }
-      },
-      "azure": {
-        "label": "Azure NC6s v3 (V100 16GB)",
-        "gpu": "NVIDIA V100",
-        "vram_gb": 16,
-        "cost_per_hour_usd": 0.90,
-        "co2_factor_kg_per_kwh": 0.190,
-        "parallel_workers": 2,
-        "estimated_time_hours": {
-          "per_experiment": 0.50,
-          "total_216_experiments": 54.0,
-          "note": "V100 mais rápido que T4 para batch_size=32; Spot ~60% mais barato"
-        }
-      }
-    }
-  },
-
   "experiment_matrix": {
-    "_comment": "Define como o produto cartesiano hiperparâmetros × ambientes é gerado",
+    "_comment": "Define como o produto cartesiano de hiperparâmetros é gerado",
     "mode": "cross_product",
-    "description": "Para cada ambiente ativo, executa os 216 experimentos do grid. O campo 'environment' é adicionado a cada resultado como dimensão extra para análise Skyband.",
+    "description": "Executa as combinações do grid e registra o ambiente detectado em runtime no resultado final.",
     "output_structure": {
       "result_fields": [
         "grid_experiment_idx",
         "grid_params",
-        "environment",
         "status",
         "resources"
       ],
@@ -143,8 +70,8 @@
         "emissions_kg_co2",
         "cost_usd"
       ],
-      "cost_formula": "cost_usd = (train_time_sec / 3600) × environment.cost_per_hour_usd",
-      "co2_formula":  "emissions_kg_co2 = energy_kwh × environment.co2_factor_kg_per_kwh"
+      "cost_formula": "cost_usd = (train_time_sec / 3600) × environment_cost_per_hour_usd (quando informado)",
+      "co2_formula":  "emissions_kg_co2 = medido por CodeCarbon"
     }
   },
 
@@ -204,21 +131,10 @@
     "recommendations": {
       "min_ram_gb": 16,
       "safe_ram_gb": 32,
-      "note_per_env": {
-        "local": "parallel=2 seguro com 32GB RAM; parallel=4 requer 64GB",
-        "colab":  "parallel=1 obrigatório; sessão de ~12h → use --resume",
-        "gcp":    "parallel=2 recomendado; considere preemptible VMs",
-        "aws":    "parallel=2 recomendado; considere Spot Instances",
-        "azure":  "parallel=2 recomendado; considere Spot VMs"
-      }
+      "note": "A capacidade e o ambiente devem ser inferidos dinamicamente no host de execução"
     },
     "estimated_total_cost_usd": {
-      "local":  8.64,
-      "colab":  0.00,
-      "gcp":   28.35,
-      "aws":   42.61,
-      "azure": 48.60,
-      "note": "Estimativas on-demand para 216 experimentos de ~30min cada; Spot/Preemptible reduz em ~60-70%"
+      "note": "Estimativas de custo por provedor devem ser derivadas da descoberta em runtime"
     }
   }
 }

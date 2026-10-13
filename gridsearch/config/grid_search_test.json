@@ -26,13 +26,13 @@
       }
     }
   },
-  "description": "Configuração de teste para Grid Search (8 experimentos, 2 ambientes)",
+  "description": "Configuração de teste para Grid Search (4 experimentos)",
   "experiment_base": "config/experiments/BertPLI.config",
   "output_dir": "output/experiments/grid_search",
   "parallel_workers": 2,
 
   "hyperparameters": {
-    "_comment": "BL-05: max_seq_length e num_epochs com valores únicos; BL-W2: dimensão 'environment' adicionada (learning_rate reduzido a 1 valor para manter o total em 8 experimentos)",
+    "_comment": "BL-05: max_seq_length e num_epochs com valores únicos (learning_rate reduzido a 1 valor para manter o total baixo)",
     "learning_rate":  [1e-5],
     "batch_size":     [8, 16],
     "optimizer":      ["adamw", "bert_adam"],
@@ -41,33 +41,10 @@
     "num_epochs":     [2]
   },
 
-  "environments": {
-    "_comment": "BL-W2: capacidade por ambiente (parallel_workers) consumida por gridsearch/executor.py::_gpu_for para restringir o round-robin de GPU",
-    "active": ["local", "colab"],
-    "details": {
-      "local": {
-        "label": "Local RTX 3090",
-        "gpu": "NVIDIA RTX 3090",
-        "vram_gb": 24,
-        "cost_per_hour_usd": 0.04,
-        "co2_factor_kg_per_kwh": 0.233,
-        "parallel_workers": 2
-      },
-      "colab": {
-        "label": "Google Colab T4",
-        "gpu": "NVIDIA T4",
-        "vram_gb": 16,
-        "cost_per_hour_usd": 0.00,
-        "co2_factor_kg_per_kwh": 0.082,
-        "parallel_workers": 1
-      }
-    }
-  },
 
   "notes": [
-    "Configuração de teste: 1 (lr) × 2 (bs) × 2 (opt) × 1 × 1 × 1 × 2 (envs) = 8 experimentos",
+    "Configuração de teste: 1 (lr) × 2 (bs) × 2 (opt) × 1 × 1 × 1 = 4 experimentos",
     "Inclui max_seq_length e num_epochs (BL-05) com valores mínimos para validar o pipeline",
-    "Inclui a dimensão 'environment' (BL-W2) para validar a alocação de GPU consciente da capacidade por ambiente",
     "Ideal para validação rápida antes de executar grids maiores",
     "Memória estimada: ~7-10 GB com parallel=2"
   ]

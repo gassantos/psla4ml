@@ -33,13 +33,13 @@
     },
     "total_combinations": {
       "hyperparameters_only": 9,
-      "with_environments": 18,
-      "formula": "3 (max_seq_length) × 3 (num_epochs) × 2 (envs) = 18",
-      "note": "BL-W2: dimensão 'environment' adicionada; hiperparâmetros originais do artigo preservados sem alteração"
+      "with_environments": 9,
+      "formula": "3 (max_seq_length) × 3 (num_epochs) = 9",
+      "note": "Grade focada unicamente em hiperparâmetros de qualidade preditiva"
     }
   },
 
-  "description": "Grid Search de Qualidade Preditiva — 18 combinações (max_seq_length × num_epochs × 2 ambientes)",
+  "description": "Grid Search de Qualidade Preditiva — 9 combinações (max_seq_length × num_epochs)",
   "experiment_base": "config/experiments/BertPLI.config",
   "output_dir": "output/experiments/grid_search",
   "parallel_workers": 2,
@@ -55,34 +55,11 @@
     "num_epochs":     [2, 3, 5]
   },
 
-  "environments": {
-    "_comment": "BL-W2: capacidade por ambiente (parallel_workers) consumida por gridsearch/executor.py::_gpu_for",
-    "active": ["local", "colab"],
-    "details": {
-      "local": {
-        "label": "Local RTX 3090",
-        "gpu": "NVIDIA RTX 3090",
-        "vram_gb": 24,
-        "cost_per_hour_usd": 0.04,
-        "co2_factor_kg_per_kwh": 0.233,
-        "parallel_workers": 2
-      },
-      "colab": {
-        "label": "Google Colab T4",
-        "gpu": "NVIDIA T4",
-        "vram_gb": 16,
-        "cost_per_hour_usd": 0.00,
-        "co2_factor_kg_per_kwh": 0.082,
-        "parallel_workers": 1
-      }
-    }
-  },
 
   "notes": [
-    "Grade de qualidade (BL-05): 3 × 3 × 2 (ambientes) = 18 experimentos — viável em CPU/GPU local",
-    "Inclui a dimensão 'environment' (BL-W2) para validar a alocação de GPU consciente da capacidade por ambiente",
+    "Grade de qualidade (BL-05): 3 × 3 = 9 experimentos — viável em CPU/GPU local",
     "Objetivo: verificar se max_seq_length=512 e num_epochs=5 superam a acurácia de 0.5 do artigo",
-    "Tempo estimado (GPU): ~18 × 2min = ~36min; (CPU): ~18 × 90min = ~27h com parallel=2",
+    "Tempo estimado (GPU): ~9 × 2min = ~18min; (CPU): ~9 × 90min = ~13.5h com parallel=2",
     "Após execução, rode '--skyband-only --skyband-metrics train_time_sec cost_usd' para comparar tiers de qualidade",
     "Combine com filter_by_template(architecture='BertPLI', dataset_id='collie', fixed_hyperparams={'dropout': 0.1}) para isolar o template do artigo"
   ],
