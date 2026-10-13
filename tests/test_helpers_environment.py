@@ -9,7 +9,7 @@ def test_normalize_environment_label_maps_supported_values():
     assert normalize_environment_label("gcp") == "GCP"
     assert normalize_environment_label("azure") == "AZURE"
     assert normalize_environment_label("aws") == "AWS"
-    assert normalize_environment_label("AWS") == "AWS"
+    assert normalize_environment_label("AWZ") == "AWS"
 
 
 def test_detect_execution_environment_defaults_to_local(monkeypatch):

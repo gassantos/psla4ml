@@ -93,7 +93,11 @@ def test_append_workflow_csv_rows_writes_one_row_per_task_attempt(monkeypatch, t
         workflow,
         device_type="CPU",
         definition=definition,
-        context={"environment": {"precision": "fp32"}},
+        context={
+            "environment": {"precision": "fp32"},
+            "requested_environment": "COLAB",
+            "selected_environment": "my-laptop",
+        },
     )
 
     with open(csv_path, newline="", encoding="utf-8") as file:
@@ -105,7 +109,7 @@ def test_append_workflow_csv_rows_writes_one_row_per_task_attempt(monkeypatch, t
     assert json.loads(rows[0]["evaluation_json"]) == {"f1_score": 0.9}
     assert rows[0]["root_error_type"] == ""
     assert json.loads(rows[0]["experiment_context_json"]) == {
-        "environment": {"precision": "fp32"},
+        "selected_environment": "my-laptop",
     }
 
 
