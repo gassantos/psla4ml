@@ -25,6 +25,42 @@ from .workflow import (
 
 logger = logging.getLogger(__name__)
 
+_HOST_DEVICE_TYPE_CACHE: str | None = None
+
+
+def _host_device_type() -> str:
+    """Retorna o tipo de recurso detectado no host (CPU/GPU/TPU)."""
+    global _HOST_DEVICE_TYPE_CACHE
+    if _HOST_DEVICE_TYPE_CACHE is not None:
+        return _HOST_DEVICE_TYPE_CACHE
+    try:
+        from utils.device import get_torch_device
+
+        detected = str(get_torch_device().get("type", "")).upper()
+        if detected in {"CPU", "GPU", "TPU"}:
+            _HOST_DEVICE_TYPE_CACHE = detected
+            return detected
+    except Exception:
+        logger.warning("Falha ao detectar o tipo de dispositivo do host.", exc_info=True)
+    _HOST_DEVICE_TYPE_CACHE = "CPU"
+    return _HOST_DEVICE_TYPE_CACHE
+
+
+def _resolve_summary_device_type(requested: str) -> str:
+    """Resolve o tipo do CSV de sumário conforme recurso priorizado na execução.
+
+    Regras:
+    - usa ``requested`` quando for ``CPU/GPU/TPU`` e compatível com o host;
+    - em inconsistências, faz fallback para o device detectado no host.
+    """
+    requested_norm = str(requested).upper()
+    host = _host_device_type()
+    if requested_norm == "CPU":
+        return "CPU"
+    if requested_norm in {"GPU", "TPU"}:
+        return requested_norm if requested_norm == host else host
+    return host
+
 
 def build_result_dict(
     *,
@@ -220,8 +256,9 @@ def append_workflow_csv_rows(
 
 def _workflow_summary_csv_path(device_type: str) -> Path:
     """Evita misturar a telemetria por tarefa com um CSV legado existente."""
+    device_type = _resolve_summary_device_type(device_type)
     suffix = datetime.now().astimezone().strftime("%Y%m%d")
-    csv_path = METRICS_DIR / f"experiment_summary_{device_type}{suffix}.csv"
+    csv_path = METRICS_DIR / f"experiment_summary_{device_type}-{suffix}.csv"
     if not csv_path.exists():
         return csv_path
     with open(csv_path, newline="", encoding="utf-8") as file:
@@ -229,7 +266,7 @@ def _workflow_summary_csv_path(device_type: str) -> Path:
     return (
         csv_path
         if "task_id" in header and "attempt_id" in header
-        else METRICS_DIR / f"experiment_summary_{device_type}{suffix}_task_telemetry.csv"
+        else METRICS_DIR / f"experiment_summary_{device_type}-{suffix}_task_telemetry.csv"
     )
 
 
@@ -297,8 +334,9 @@ def append_csv_row(
     eval_metrics: dict[str, Any],
 ) -> Path:
     """Acrescenta uma linha no CSV acumulado de sumário."""
+    device_type = _resolve_summary_device_type(device_type)
     csv_filename = (
-        f"experiment_summary_{device_type}"
+        f"experiment_summary_{device_type}-"
         f"{datetime.now().astimezone().strftime('%Y%m%d')}.csv"
     )
     csv_path = METRICS_DIR / csv_filename
