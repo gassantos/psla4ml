@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from .workflow import (
     TaskActivity,
     TaskDefinition,
 )
+
+logger = logging.getLogger(__name__)
 
 DatasetProbe = Callable[[], dict[str, Any]]
 ExperimentLauncher = Callable[..., dict[str, Any] | None]
@@ -358,7 +361,7 @@ def build_huggingface_task_functions(
         if isinstance(evaluation, dict):
             result_holder["result"] = {"evaluation": evaluation}
 
-    setattr(adapt_model, "restore_cached_result", restore_adaptation)
+    adapt_model.restore_cached_result = restore_adaptation # type: ignore
 
     return {
         "ingest_dataset": ingest_dataset,
@@ -496,21 +499,18 @@ def _build_huggingface_dataset_probe(
                 # Split opcional no dataset atual.
                 continue
 
-        api_size_mb = None
-        if workflow_config.dataset_source == "hub":
-            builder = load_dataset_builder(
-                workflow_config.dataset_id,
-                name=workflow_config.dataset_config,
-                cache_dir=config.get("data", "cache_dir", fallback=None),
-            )
-            info = builder.info
-            size_in_bytes = (
-                getattr(info, "size_in_bytes", None)
-                or getattr(info, "dataset_size", None)
-                or getattr(info, "download_size", None)
-            )
-            if size_in_bytes:
-                api_size_mb = float(size_in_bytes) / (1024.0 ** 2)
+        # O metadado do dataset já carregado evita rede; o grid roda com HF_HUB_OFFLINE=1.
+        api_size_mb = _hf_info_size_mb(getattr(getattr(train_dataset, "dataset", None), "info", None))
+        if api_size_mb is None and workflow_config.dataset_source == "hub":
+            try:
+                builder = load_dataset_builder(
+                    workflow_config.dataset_id,
+                    name=workflow_config.dataset_config,
+                    cache_dir=config.get("data", "cache_dir", fallback=None),
+                )
+                api_size_mb = _hf_info_size_mb(builder.info)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Tamanho do dataset indisponível via API do Hub: %s", exc)
 
         stats = _summarize_dataset_partitions(partitions, dataset_size_mb=api_size_mb)
         return {
@@ -521,6 +521,16 @@ def _build_huggingface_dataset_probe(
         }
 
     return probe
+
+
+def _hf_info_size_mb(info: Any) -> float | None:
+    """Converte o tamanho de um ``DatasetInfo`` do Hugging Face para MB."""
+    size_in_bytes = (
+        getattr(info, "size_in_bytes", None)
+        or getattr(info, "dataset_size", None)
+        or getattr(info, "download_size", None)
+    )
+    return float(size_in_bytes) / (1024.0 ** 2) if size_in_bytes else None
 
 
 def _build_launcher_dataset_probe(config: LauncherWorkflowConfig) -> DatasetProbe:

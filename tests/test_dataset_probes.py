@@ -16,7 +16,7 @@ from experiment.workflow_templates import (
 MB = 1024 * 1024
 
 
-def _fake_dataset_class(splits, *, file_list=None, source="hub"):
+def _fake_dataset_class(splits, *, file_list=None, source="hub", info=None):
     """Cria uma classe de dataset em memória; splits ausentes levantam ValueError."""
 
     class FakeDataset:
@@ -26,6 +26,8 @@ def _fake_dataset_class(splits, *, file_list=None, source="hub"):
             self.rows = splits[mode]
             self.file_list = list(file_list or [])
             self.source = source
+            if info is not None:
+                self.dataset = type("Arrow", (), {"info": info, "cache_files": []})()
 
         def __len__(self):
             return len(self.rows)
@@ -197,6 +199,43 @@ def test_huggingface_probe_falls_back_to_other_api_size_fields(monkeypatch, tmp_
     )()
 
     assert stats["dataset_size_mb"] == pytest.approx(1.0)
+
+
+def test_huggingface_probe_reads_size_from_loaded_dataset_without_hub_call(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "datasets.load_dataset_builder",
+        lambda *_a, **_k: pytest.fail("Hub não deve ser consultado quando o dataset carregado tem info"),
+    )
+    monkeypatch.setattr(
+        "dataset.nlp.HuggingFace.HuggingFaceDataset",
+        _fake_dataset_class({"train": TRAIN_ROWS}, info=_FakeInfo(size_in_bytes=3 * MB)),
+    )
+    workflow_config = HuggingFaceWorkflowConfig(name="hf", dataset_source="hub", dataset_id="org/data")
+
+    stats = _build_huggingface_dataset_probe(
+        workflow_config, config_path=_config_file(tmp_path), train_file=None,
+    )()
+
+    assert stats["dataset_size_mb"] == pytest.approx(3.0)
+
+
+def test_huggingface_probe_survives_hub_failure_in_offline_mode(monkeypatch, tmp_path):
+    def offline_builder(*_args, **_kwargs):
+        raise ConnectionError("Couldn't reach 'org/data' on the Hub (OfflineModeIsEnabled)")
+
+    monkeypatch.setattr("datasets.load_dataset_builder", offline_builder)
+    monkeypatch.setattr(
+        "dataset.nlp.HuggingFace.HuggingFaceDataset", _fake_dataset_class({"train": TRAIN_ROWS}),
+    )
+    workflow_config = HuggingFaceWorkflowConfig(name="hf", dataset_source="hub", dataset_id="org/data")
+
+    stats = _build_huggingface_dataset_probe(
+        workflow_config, config_path=_config_file(tmp_path), train_file=None,
+    )()
+
+    assert stats["records"] == 2
+    assert stats["train_samples"] == 2
+    assert stats["dataset_size_mb"] is None
 
 
 def test_huggingface_probe_local_json_skips_api_and_measures_local_files(monkeypatch, tmp_path):
