@@ -197,6 +197,9 @@ def append_workflow_csv_rows(
         "attempt_id", "attempt_number", "attempt_status", "started_at", "completed_at",
         "task_time_sec", "avg_ram_mb", "peak_ram_mb", "vram_mb", "peak_vram_mb",
         "energy_kwh", "emissions_kg_co2", "cost_usd",
+        "dataset_size_mb", "dataset_tokens_per_document", "dataset_document_count",
+        "dataset_chunk_count", "dataset_train_samples", "dataset_valid_samples",
+        "dataset_test_samples",
         "resources_json", "evaluation_json", "artifacts_json",
         "error_type", "root_error_type", "failure_stage", "error",
         "is_infra_error", "attempt_count", "is_final_attempt",
@@ -204,6 +207,7 @@ def append_workflow_csv_rows(
     ]
     write_header = not csv_path.exists()
     definitions = {task.task_id: task for task in definition.tasks} if definition else {}
+    dataset_summary = _extract_dataset_summary_from_workflow(workflow)
 
     with open(csv_path, "a", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=headers)
@@ -239,6 +243,13 @@ def append_workflow_csv_rows(
                     "energy_kwh": resources.get("energy_kwh"),
                     "emissions_kg_co2": resources.get("emissions_kg_co2"),
                     "cost_usd": resources.get("cost_usd"),
+                    "dataset_size_mb": dataset_summary.get("dataset_size_mb"),
+                    "dataset_tokens_per_document": dataset_summary.get("dataset_tokens_per_document"),
+                    "dataset_document_count": dataset_summary.get("dataset_document_count"),
+                    "dataset_chunk_count": dataset_summary.get("dataset_chunk_count"),
+                    "dataset_train_samples": dataset_summary.get("dataset_train_samples"),
+                    "dataset_valid_samples": dataset_summary.get("dataset_valid_samples"),
+                    "dataset_test_samples": dataset_summary.get("dataset_test_samples"),
                     "resources_json": json.dumps(resources, ensure_ascii=False, sort_keys=True),
                     "evaluation_json": json.dumps(metrics.get("evaluation", {}), ensure_ascii=False, sort_keys=True),
                     "artifacts_json": json.dumps(attempt.artifacts, ensure_ascii=False, sort_keys=True),
@@ -252,6 +263,43 @@ def append_workflow_csv_rows(
                     "experiment_context_json": json.dumps(safe_context, ensure_ascii=False, sort_keys=True),
                 })
     return csv_path
+
+
+def _extract_dataset_summary_from_workflow(workflow: ExperimentRun) -> dict[str, Any]:
+    """Extrai estatísticas do dataset a partir da tarefa de ingestão do workflow."""
+    defaults: dict[str, Any] = {
+        "dataset_size_mb": None,
+        "dataset_tokens_per_document": None,
+        "dataset_document_count": None,
+        "dataset_chunk_count": None,
+        "dataset_train_samples": None,
+        "dataset_valid_samples": None,
+        "dataset_test_samples": None,
+    }
+    ingest_candidates = [
+        task
+        for task in workflow.tasks
+        if task.task_id in {"ingest_dataset", "ingest_data", "ingest"}
+    ]
+    if not ingest_candidates:
+        return defaults
+
+    for task in ingest_candidates:
+        for attempt in task.attempts:
+            metrics = attempt.metrics if isinstance(attempt.metrics, dict) else {}
+            dataset = metrics.get("dataset") if isinstance(metrics, dict) else None
+            if not isinstance(dataset, dict):
+                continue
+            summary = dict(defaults)
+            summary["dataset_size_mb"] = dataset.get("dataset_size_mb")
+            summary["dataset_tokens_per_document"] = dataset.get("tokens_per_document")
+            summary["dataset_document_count"] = dataset.get("document_count")
+            summary["dataset_chunk_count"] = dataset.get("chunk_count")
+            summary["dataset_train_samples"] = dataset.get("train_samples")
+            summary["dataset_valid_samples"] = dataset.get("valid_samples")
+            summary["dataset_test_samples"] = dataset.get("test_samples")
+            return summary
+    return defaults
 
 
 def _workflow_summary_csv_path(device_type: str) -> Path:

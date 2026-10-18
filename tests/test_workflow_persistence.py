@@ -5,6 +5,8 @@ import json
 import re
 from datetime import datetime
 
+import pytest
+
 from experiment import persistence
 from experiment.workflow import (
     ExperimentDefinition,
@@ -347,3 +349,67 @@ def test_daily_summary_csv_has_expected_filename_and_field_formats(monkeypatch, 
     assert evaluation_json["f1_score"] == 0.9
     assert artifacts_json["checkpoint"] == "model.pt"
     assert context_json["selected_environment"] == "my-laptop"
+
+
+def test_append_workflow_csv_rows_propagates_dataset_statistics_columns(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    definition = ExperimentDefinition(
+        "workflow",
+        (
+            TaskDefinition("ingest_dataset", "Carregar dataset", activity=TaskActivity.INGESTION),
+            TaskDefinition("adapt_model", "Adaptar modelo", activity=TaskActivity.ADAPTATION),
+        ),
+    )
+    workflow = ExperimentRun(
+        "run-dataset-stats",
+        "workflow",
+        "success",
+        [
+            TaskRun(
+                "ingest_dataset",
+                "Carregar dataset",
+                "ingest",
+                TaskStatus.SUCCEEDED,
+                [
+                    TaskExecutionAttempt(
+                        "ingest-1",
+                        1,
+                        TaskStatus.SUCCEEDED,
+                        metrics={
+                            "dataset": {
+                                "dataset_size_mb": 12.34,
+                                "tokens_per_document": 87.5,
+                                "document_count": 120,
+                                "chunk_count": 180,
+                                "train_samples": 100,
+                                "valid_samples": 10,
+                                "test_samples": 10,
+                            }
+                        },
+                    )
+                ],
+            ),
+            TaskRun(
+                "adapt_model",
+                "Adaptar modelo",
+                "train",
+                TaskStatus.SUCCEEDED,
+                [TaskExecutionAttempt("adapt-1", 1, TaskStatus.SUCCEEDED)],
+            ),
+        ],
+    )
+
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU", definition=definition)
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    assert len(rows) == 2
+    for row in rows:
+        assert float(row["dataset_size_mb"]) == pytest.approx(12.34)
+        assert float(row["dataset_tokens_per_document"]) == pytest.approx(87.5)
+        assert int(row["dataset_document_count"]) == 120
+        assert int(row["dataset_chunk_count"]) == 180
+        assert int(row["dataset_train_samples"]) == 100
+        assert int(row["dataset_valid_samples"]) == 10
+        assert int(row["dataset_test_samples"]) == 10

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -35,7 +36,7 @@ class WorkflowTaskTemplate:
     depends_on: tuple[str, ...] = ()
     activity: TaskActivity = TaskActivity.CUSTOM
     regime: ExecutionRegime = ExecutionRegime.BUILD
-    resources: ResourceRequirements = ResourceRequirements()
+    resources: ResourceRequirements = ResourceRequirements()  # noqa: RUF009
 
 
 @dataclass(frozen=True)
@@ -418,11 +419,13 @@ def build_launcher_task_functions(
 ) -> Mapping[str, Callable[[], dict[str, Any]]]:
     """Adapta o launcher legado ao mesmo contrato T0 -> T2 -> T5."""
     result_holder: dict[str, dict[str, Any]] = {}
+    probe = _build_launcher_dataset_probe(config)
 
     def ingest_dataset() -> dict[str, Any]:
+        metadata = probe()
         workflow = build_launcher_workflow(config)
         dataset = workflow.tasks[0].outputs[0]
-        return {"metrics": {"dataset": {**dataset.metadata, "uri": dataset.uri}},
+        return {"metrics": {"dataset": {**dataset.metadata, **metadata, "uri": dataset.uri}},
                 "artifacts": {"dataset": _artifact_record(dataset)}}
 
     def adapt_model() -> dict[str, Any]:
@@ -466,6 +469,8 @@ def _build_huggingface_dataset_probe(
     train_file: str | None,
 ) -> DatasetProbe:
     def probe() -> dict[str, Any]:
+        from datasets import load_dataset_builder
+
         from dataset.nlp.HuggingFace import HuggingFaceDataset
 
         from .helpers import load_config
@@ -477,14 +482,191 @@ def _build_huggingface_dataset_probe(
             config.set("data", "train_file_list", f"{train_file}.json")
         for key, value in _dataset_overrides(workflow_config).items():
             config.set("data", key, value)
-        dataset = HuggingFaceDataset(config, "train")
-        size = len(dataset)
-        if size < 1:
+        train_dataset = HuggingFaceDataset(config, "train")
+        train_size = len(train_dataset)
+        if train_size < 1:
             raise ValueError("O dataset Hugging Face não possui exemplos de treino.")
-        sample = dataset[0]
-        return {"records": size, "fields": sorted(sample), "source": workflow_config.dataset_source}
+        train_sample = train_dataset[0]
+
+        partitions: dict[str, Any] = {"train": train_dataset}
+        for mode in ("valid", "test"):
+            try:
+                partitions[mode] = HuggingFaceDataset(config, mode)
+            except Exception:  # noqa: BLE001, S112
+                # Split opcional no dataset atual.
+                continue
+
+        api_size_mb = None
+        if workflow_config.dataset_source == "hub":
+            builder = load_dataset_builder(
+                workflow_config.dataset_id,
+                name=workflow_config.dataset_config,
+                cache_dir=config.get("data", "cache_dir", fallback=None),
+            )
+            info = builder.info
+            size_in_bytes = (
+                getattr(info, "size_in_bytes", None)
+                or getattr(info, "dataset_size", None)
+                or getattr(info, "download_size", None)
+            )
+            if size_in_bytes:
+                api_size_mb = float(size_in_bytes) / (1024.0 ** 2)
+
+        stats = _summarize_dataset_partitions(partitions, dataset_size_mb=api_size_mb)
+        return {
+            "records": train_size,
+            "fields": sorted(train_sample),
+            "source": workflow_config.dataset_source,
+            **stats,
+        }
 
     return probe
+
+
+def _build_launcher_dataset_probe(config: LauncherWorkflowConfig) -> DatasetProbe:
+    """Coleta estatísticas do dataset configurado no launcher local."""
+
+    def probe() -> dict[str, Any]:
+        from dataset import dataset_list
+
+        from .helpers import load_config
+
+        cfg = load_config(config.config_path)
+        dataset_type = cfg.get("data", "dataset_type", fallback="JsonFromFiles")
+        dataset_cls = dataset_list.get(dataset_type)
+        if dataset_cls is None:
+            return {"source": "config"}
+
+        partitions: dict[str, Any] = {}
+        for mode in ("train", "valid", "test"):
+            try:
+                partitions[mode] = dataset_cls(cfg, mode)
+            except Exception:
+                continue
+
+        if not partitions:
+            return {"source": "config"}
+
+        source = str(getattr(next(iter(partitions.values())), "source", "config"))
+        stats = _summarize_dataset_partitions(partitions)
+        train_records = stats.get("train_samples")
+        fields = []
+        try:
+            if partitions.get("train") is not None and len(partitions["train"]) > 0:
+                fields = sorted(partitions["train"][0].keys())
+        except Exception:
+            fields = []
+        return {
+            "source": source,
+            "records": train_records,
+            "fields": fields,
+            **stats,
+        }
+
+    return probe
+
+
+def _summarize_dataset_partitions(
+    partitions: Mapping[str, Any],
+    *,
+    dataset_size_mb: float | None = None,
+    token_sample_limit_per_split: int = 500,
+) -> dict[str, Any]:
+    """Resume estatísticas de dataset por partição de execução."""
+    train_samples = _safe_len(partitions.get("train"))
+    valid_samples = _safe_len(partitions.get("valid"))
+    test_samples = _safe_len(partitions.get("test"))
+    chunk_count = sum(value for value in (train_samples, valid_samples, test_samples) if value is not None)
+    document_count = chunk_count
+
+    sampled_tokens = 0
+    sampled_documents = 0
+    for split in ("train", "valid", "test"):
+        dataset = partitions.get(split)
+        if dataset is None:
+            continue
+        split_size = _safe_len(dataset)
+        if split_size in (None, 0):
+            continue
+        sample_size = min(split_size, token_sample_limit_per_split)
+        for idx in range(sample_size):
+            try:
+                sample = dataset[idx]
+            except Exception:
+                break
+            sampled_tokens += _count_tokens_for_sample(sample)
+            sampled_documents += 1
+
+    tokens_per_document = (
+        sampled_tokens / sampled_documents if sampled_documents > 0 else None
+    )
+
+    if dataset_size_mb is None:
+        dataset_size_mb = _estimate_dataset_size_mb(partitions)
+
+    return {
+        "dataset_size_mb": dataset_size_mb,
+        "tokens_per_document": tokens_per_document,
+        "document_count": document_count,
+        "chunk_count": chunk_count,
+        "train_samples": train_samples,
+        "valid_samples": valid_samples,
+        "test_samples": test_samples,
+    }
+
+
+def _estimate_dataset_size_mb(partitions: Mapping[str, Any]) -> float | None:
+    """Estima tamanho total do dataset em MB a partir de arquivos locais/cache."""
+    file_paths: set[str] = set()
+    for dataset in partitions.values():
+        local_files = getattr(dataset, "file_list", None)
+        if isinstance(local_files, list):
+            for path in local_files:
+                if isinstance(path, str):
+                    file_paths.add(path)
+        hf_cache_files = getattr(getattr(dataset, "dataset", None), "cache_files", None)
+        if isinstance(hf_cache_files, list):
+            for entry in hf_cache_files:
+                if isinstance(entry, dict):
+                    filename = entry.get("filename")
+                    if isinstance(filename, str):
+                        file_paths.add(filename)
+
+    if not file_paths:
+        return None
+
+    total_bytes = 0
+    for file_path in file_paths:
+        try:
+            total_bytes += os.path.getsize(file_path)
+        except OSError:
+            continue
+    if total_bytes <= 0:
+        return None
+    return total_bytes / (1024.0 ** 2)
+
+
+def _safe_len(dataset: Any) -> int | None:
+    if dataset is None:
+        return None
+    try:
+        return int(len(dataset))
+    except Exception:
+        return None
+
+
+def _count_tokens_for_sample(sample: Any) -> int:
+    if not isinstance(sample, dict):
+        return 0
+    if "text_a" in sample or "text_b" in sample:
+        text = f"{sample.get('text_a', '')} {sample.get('text_b', '')}".strip()
+        return len([token for token in text.split() if token])
+
+    total = 0
+    for value in sample.values():
+        if isinstance(value, str):
+            total += len([token for token in value.split() if token])
+    return total
 
 
 def _dataset_overrides(config: HuggingFaceWorkflowConfig) -> dict[str, str]:
