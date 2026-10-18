@@ -2,6 +2,8 @@
 
 import csv
 import json
+import re
+from datetime import datetime
 
 from experiment import persistence
 from experiment.workflow import (
@@ -255,3 +257,93 @@ def test_attempt_count_one_for_single_attempt(monkeypatch, tmp_path):
         rows = list(csv.DictReader(f))
     assert rows[0]["attempt_count"] == "1"
     assert rows[0]["is_final_attempt"] == "True"
+
+
+def test_daily_summary_csv_has_expected_filename_and_field_formats(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    definition = ExperimentDefinition(
+        "workflow", (TaskDefinition("train", "Treinar", activity=TaskActivity.ADAPTATION),)
+    )
+    workflow = ExperimentRun(
+        "run-format", "workflow", "success", [TaskRun(
+            "train", "Treinar", "train", TaskStatus.SUCCEEDED, [
+                TaskExecutionAttempt(
+                    "attempt-1",
+                    1,
+                    TaskStatus.SUCCEEDED,
+                    started_at="2026-10-17T10:00:00+00:00",
+                    completed_at="2026-10-17T10:01:00+00:00",
+                    metrics={
+                        "resources": {
+                            "task_time_sec": 60.0,
+                            "avg_ram_mb": 512.25,
+                            "peak_ram_mb": 768.5,
+                            "vram_mb": 1024.0,
+                            "peak_vram_mb": 1536.0,
+                            "energy_kwh": 0.0012,
+                            "emissions_kg_co2": 0.0003,
+                            "cost_usd": 0.00014,
+                        },
+                        "evaluation": {"f1_score": 0.9},
+                    },
+                    artifacts={"checkpoint": "model.pt"},
+                ),
+            ],
+        )],
+    )
+
+    csv_path = persistence.append_workflow_csv_rows(
+        workflow,
+        device_type="CPU",
+        definition=definition,
+        context={"selected_environment": "my-laptop"},
+    )
+
+    assert re.match(r"^experiment_summary_CPU-\d{8}\.csv$", csv_path.name)
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    assert len(rows) == 1
+    row = rows[0]
+
+    # Campos numéricos devem ser serializados de forma parseável para float.
+    for field in (
+        "task_time_sec",
+        "avg_ram_mb",
+        "peak_ram_mb",
+        "vram_mb",
+        "peak_vram_mb",
+        "energy_kwh",
+        "emissions_kg_co2",
+        "cost_usd",
+    ):
+        assert row[field] != ""
+        value = float(row[field])
+        assert value >= 0
+
+    # Campos inteiros e booleanos derivados.
+    assert int(row["attempt_number"]) == 1
+    assert int(row["attempt_count"]) == 1
+    assert row["is_infra_error"] in {"True", "False"}
+    assert row["is_final_attempt"] in {"True", "False"}
+
+    # Datas em ISO 8601.
+    datetime.fromisoformat(row["started_at"])
+    datetime.fromisoformat(row["completed_at"])
+
+    # Colunas JSON devem ser válidas e com formato de objeto.
+    resources_json = json.loads(row["resources_json"])
+    evaluation_json = json.loads(row["evaluation_json"])
+    artifacts_json = json.loads(row["artifacts_json"])
+    context_json = json.loads(row["experiment_context_json"])
+
+    assert isinstance(resources_json, dict)
+    assert isinstance(evaluation_json, dict)
+    assert isinstance(artifacts_json, dict)
+    assert isinstance(context_json, dict)
+    assert resources_json["task_time_sec"] == 60.0
+    assert evaluation_json["f1_score"] == 0.9
+    assert artifacts_json["checkpoint"] == "model.pt"
+    assert context_json["selected_environment"] == "my-laptop"
