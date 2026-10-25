@@ -8,22 +8,36 @@ Autor: Gustavo Alexandre
 """
 
 import csv
+import hashlib
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .helpers import METRICS_DIR
+from .helpers import METRICS_DIR, hardware_info
 from .workflow import (
     ExperimentDefinition,
     ExperimentRun,
     TaskExecutionAttempt,
     TaskRun,
     TaskStatus,
+    legacy_task_run,
 )
 
 logger = logging.getLogger(__name__)
+
+# Contexto de execução em colunas; grid_* espelha as chaves de gridsearch/config/param_mapping.json.
+CONTEXT_COLUMNS = (
+    "parallel_workers", "selected_environment",
+    "configured_environment", "resource_machine_name",
+    "cpu_count", "gpu_count", "gpu_model", "disk_total_gb", "disk_free_gb",
+)
+GRID_PARAM_NAMES = (
+    "learning_rate", "batch_size", "optimizer", "dropout",
+    "seed", "environment", "num_epochs", "max_seq_length",
+)
+GRID_PARAM_COLUMNS = tuple(f"grid_{name}" for name in GRID_PARAM_NAMES)
 
 _HOST_DEVICE_TYPE_CACHE: str | None = None
 
@@ -190,7 +204,17 @@ def append_workflow_csv_rows(
     safe_context = dict(context or {})
     safe_context.pop("environment", None)
     safe_context.pop("requested_environment", None)
-    csv_path = _workflow_summary_csv_path(device_type)
+    grid_params = safe_context.pop("grid_params", None)
+    grid_params = grid_params if isinstance(grid_params, dict) else {}
+    unknown = (set(safe_context) - set(CONTEXT_COLUMNS)) | {
+        f"grid_params.{name}" for name in set(grid_params) - set(GRID_PARAM_NAMES)
+    }
+    if unknown:
+        logger.warning("Contexto sem coluna no experiment_summary, ignorado: %s", sorted(unknown))
+    context_values = {
+        **{column: safe_context.get(column) for column in CONTEXT_COLUMNS},
+        **{f"grid_{name}": grid_params.get(name) for name in GRID_PARAM_NAMES},
+    }
     headers = [
         "experiment_run_id", "definition_name", "workflow_status",
         "task_id", "task_name", "task_type", "activity", "regime", "task_status",
@@ -200,11 +224,13 @@ def append_workflow_csv_rows(
         "dataset_size_mb", "dataset_tokens_per_document", "dataset_document_count",
         "dataset_chunk_count", "dataset_train_samples", "dataset_valid_samples",
         "dataset_test_samples",
-        "resources_json", "evaluation_json", "artifacts_json",
+        "total_gflops",
+        # "resources_json", "evaluation_json", "artifacts_json",
         "error_type", "root_error_type", "failure_stage", "error",
         "is_infra_error", "attempt_count", "is_final_attempt",
-        "experiment_context_json",
+        *CONTEXT_COLUMNS, *GRID_PARAM_COLUMNS,
     ]
+    csv_path = _workflow_summary_csv_path(device_type, headers)
     write_header = not csv_path.exists()
     definitions = {task.task_id: task for task in definition.tasks} if definition else {}
     dataset_summary = _extract_dataset_summary_from_workflow(workflow)
@@ -250,9 +276,10 @@ def append_workflow_csv_rows(
                     "dataset_train_samples": dataset_summary.get("dataset_train_samples"),
                     "dataset_valid_samples": dataset_summary.get("dataset_valid_samples"),
                     "dataset_test_samples": dataset_summary.get("dataset_test_samples"),
-                    "resources_json": json.dumps(resources, ensure_ascii=False, sort_keys=True),
-                    "evaluation_json": json.dumps(metrics.get("evaluation", {}), ensure_ascii=False, sort_keys=True),
-                    "artifacts_json": json.dumps(attempt.artifacts, ensure_ascii=False, sort_keys=True),
+                    "total_gflops": resources.get("total_gflops"),
+                    # "resources_json": json.dumps(resources, ensure_ascii=False, sort_keys=True),
+                    # "evaluation_json": json.dumps(metrics.get("evaluation", {}), ensure_ascii=False, sort_keys=True),
+                    # "artifacts_json": json.dumps(attempt.artifacts, ensure_ascii=False, sort_keys=True),
                     "error_type": attempt.error_type,
                     "root_error_type": attempt.root_error_type,
                     "failure_stage": attempt.failure_stage,
@@ -260,9 +287,26 @@ def append_workflow_csv_rows(
                     "is_infra_error": attempt.error_type == "InfraError" if attempt.error_type else False,
                     "attempt_count": attempt_count,
                     "is_final_attempt": attempt.attempt_number == attempt_count,
-                    "experiment_context_json": json.dumps(safe_context, ensure_ascii=False, sort_keys=True),
+                    **context_values,
                 })
     return csv_path
+
+
+def legacy_result_context(result: dict[str, Any]) -> dict[str, Any]:
+    """Contexto do sumário a partir do dicionário de resultado legado (``build_result_dict``)."""
+    hyperparameters = result.get("hyperparameters", {})
+    params = {
+        "optimizer": hyperparameters.get("optimizer"),
+        "learning_rate": hyperparameters.get("learning_rate"),
+        "batch_size": hyperparameters.get("batch_size"),
+        "num_epochs": hyperparameters.get("epoch"),
+        "seed": result.get("experiment", {}).get("seed"),
+    }
+    return {
+        **hardware_info(),
+        "parallel_workers": result.get("execution", {}).get("parallel_workers"),
+        "grid_params": {name: value for name, value in params.items() if value is not None},
+    }
 
 
 def _extract_dataset_summary_from_workflow(workflow: ExperimentRun) -> dict[str, Any]:
@@ -302,20 +346,26 @@ def _extract_dataset_summary_from_workflow(workflow: ExperimentRun) -> dict[str,
     return defaults
 
 
-def _workflow_summary_csv_path(device_type: str) -> Path:
-    """Evita misturar a telemetria por tarefa com um CSV legado existente."""
+def _workflow_summary_csv_path(device_type: str, headers: list[str]) -> Path:
+    """Arquivo do dia; se o cabeçalho existente for outro, usa um arquivo próprio do esquema.
+
+    Anexar a um CSV com cabeçalho diferente desalinharia as colunas sem erro.
+    """
     device_type = _resolve_summary_device_type(device_type)
     suffix = datetime.now().astimezone().strftime("%Y%m%d")
     csv_path = METRICS_DIR / f"experiment_summary_{device_type}-{suffix}.csv"
-    if not csv_path.exists():
+    if _csv_header(csv_path) in (None, headers):
         return csv_path
-    with open(csv_path, newline="", encoding="utf-8") as file:
-        header = next(csv.reader(file), [])
-    return (
-        csv_path
-        if "task_id" in header and "attempt_id" in header
-        else METRICS_DIR / f"experiment_summary_{device_type}-{suffix}_task_telemetry.csv"
-    )
+    schema = hashlib.sha1(",".join(headers).encode("utf-8")).hexdigest()[:8]
+    return METRICS_DIR / f"experiment_summary_{device_type}-{suffix}_schema-{schema}.csv"
+
+
+def _csv_header(path: Path) -> list[str] | None:
+    """Cabeçalho do CSV, ou ``None`` se o arquivo ainda não existe."""
+    if not path.exists():
+        return None
+    with open(path, newline="", encoding="utf-8") as file:
+        return next(csv.reader(file), [])
 
 
 def load_workflow_run(run_dir: Path) -> ExperimentRun:
@@ -380,74 +430,41 @@ def append_csv_row(
     status: str,
     end_iso: str,
     eval_metrics: dict[str, Any],
+    start_iso: str | None = None,
 ) -> Path:
-    """Acrescenta uma linha no CSV acumulado de sumário."""
-    device_type = _resolve_summary_device_type(device_type)
-    csv_filename = (
-        f"experiment_summary_{device_type}-"
-        f"{datetime.now().astimezone().strftime('%Y%m%d')}.csv"
+    """Acrescenta ao sumário uma linha no mesmo esquema de ``append_workflow_csv_rows``.
+
+    O experimento legado entra como workflow de uma tarefa implícita
+    (:func:`legacy_task_run`), igual ao caminho de ``experiment.runner``.
+    """
+    result = {
+        "experiment": {
+            "id": experiment_id,
+            "config_name": json_filename,
+            "seed": seed,
+            "status": status,
+            "timestamp_start": start_iso,
+            "timestamp_end": end_iso,
+        },
+        "execution": {"parallel_workers": parallel_workers, "train_dataset": train_dataset_name},
+        "hyperparameters": {
+            "optimizer": optimizer,
+            "learning_rate": learning_rate,
+            "avg_gflops_per_batch": avg_gflops_per_batch,
+            "batch_size": batch_size,
+            "epoch": epoch,
+        },
+        "resources": {
+            "train_time_sec": f"{exec_time:.2f}",
+            "energy_kwh": energy_kwh,
+            "emissions_kg_co2": emissions_kg,
+            "cost_usd": cost_usd,
+            "avg_ram_mb": avg_ram,
+            "peak_ram_mb": peak_ram,
+            "total_gflops": total_gflops,
+        },
+        "evaluation": eval_metrics or None,
+    }
+    return append_workflow_csv_rows(
+        legacy_task_run(result), device_type=device_type, context=legacy_result_context(result),
     )
-    csv_path = METRICS_DIR / csv_filename
-    write_header = not csv_path.exists()
-
-    with open(csv_path, "a", newline="") as f:
-        writer = csv.writer(f)
-
-        if write_header:
-            writer.writerow([
-                "experiment_id",
-                "config_name",
-                "seed",
-                "device_type",
-                "parallel_workers",
-                "train_dataset",
-                "optimizer",
-                "learning_rate",
-                "batch_size",
-                "epoch",
-                "train_time_sec",
-                "energy_kwh",
-                "emissions_kg",
-                "cost_usd",
-                "avg_ram_mb",
-                "peak_ram_mb",
-                "avg_gflops_per_batch",
-                "total_gflops",
-                "status",
-                "timestamp",
-                "eval_precision",
-                "eval_recall",
-                "eval_f1",
-                "eval_accuracy",
-                "eval_source",
-            ])
-
-        writer.writerow([
-            experiment_id,
-            json_filename,
-            seed,
-            device_type,
-            parallel_workers,
-            train_dataset_name,
-            optimizer,
-            learning_rate,
-            batch_size,
-            epoch,
-            f"{exec_time:.2f}",
-            energy_kwh,
-            emissions_kg,
-            f"{cost_usd:.6f}" if cost_usd is not None else None,
-            avg_ram,
-            peak_ram,
-            avg_gflops_per_batch,
-            total_gflops,
-            status,
-            end_iso,
-            f"{eval_metrics['precision']:.4f}" if eval_metrics else None,
-            f"{eval_metrics['recall']:.4f}" if eval_metrics else None,
-            f"{eval_metrics['f1_score']:.4f}" if eval_metrics else None,
-            f"{eval_metrics['accuracy']:.4f}" if eval_metrics and 'accuracy' in eval_metrics else None,
-            eval_metrics.get("source") if eval_metrics else None,
-        ])
-
-    return csv_path
