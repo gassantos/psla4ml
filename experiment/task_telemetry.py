@@ -58,6 +58,8 @@ class TaskTelemetryCollector:
         *,
         task_id: str | None = None,
         attempt_id: str | None = None,
+        experiment_run_id: str | None = None,
+        experiment_name: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, float | None], Exception | None]:
         """Executa a tarefa e retorna sua saida junto das metricas observadas."""
         # Mede desde o início da tentativa instrumentada para manter
@@ -73,7 +75,7 @@ class TaskTelemetryCollector:
             args=(process, samples, stop_sampling, self._sample_interval_sec),
             daemon=True,
         )
-        tracker = self._start_tracker(task_id, attempt_id)
+        tracker = self._start_tracker(task_id, experiment_run_id)
         sampler.start()
         output: dict[str, Any] = {}
         error: Exception | None = None
@@ -87,7 +89,9 @@ class TaskTelemetryCollector:
             sampler.join(timeout=2)
 
         energy_kwh, emissions_kg_co2 = self._stop_tracker(tracker)
-        emissions_row = _emissions_row(tracker)
+        emissions_row = _label_emissions_row(
+            _emissions_row(tracker), experiment_run_id, attempt_id, experiment_name
+        )
         gpu = _gpu_metrics()
         elapsed = time.perf_counter() - started
         peak_ram_mb = max(samples) if samples else _rss_mb(process)
@@ -114,7 +118,7 @@ class TaskTelemetryCollector:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Linha do CodeCarbon não gravada no emissions CSV: %s", exc)
 
-    def _start_tracker(self, task_id: str | None, attempt_id: str | None) -> Any | None:
+    def _start_tracker(self, task_id: str | None, experiment_run_id: str | None) -> Any | None:
         if not self._enable_emissions:
             return None
         try:
@@ -122,7 +126,7 @@ class TaskTelemetryCollector:
                 self._tracker_factory(
                     output_dir=self._emissions_output_dir,
                     task_id=task_id,
-                    attempt_id=attempt_id,
+                    experiment_run_id=experiment_run_id,
                     tracking_mode=self._tracking_mode,
                 )
                 if self._uses_default_tracker
@@ -152,17 +156,39 @@ def _emissions_row(tracker: Any | None) -> Mapping[str, Any] | None:
     return values if isinstance(values, Mapping) else None
 
 
+def _label_emissions_row(
+    row: Mapping[str, Any] | None,
+    experiment_run_id: str | None,
+    attempt_id: str | None,
+    experiment_name: str | None,
+) -> dict[str, Any] | None:
+    """Alinha a linha às chaves do experiment_summary; o run_id do CodeCarbon é interno ao tracker."""
+    if row is None:
+        return None
+    labelled: dict[str, Any] = {}
+    for key, value in row.items():
+        if key == "experiment_id" and experiment_run_id:
+            value = experiment_run_id
+        elif key == "run_id" and attempt_id:
+            value = attempt_id
+        labelled[key] = value
+        if key == "experiment_id":
+            labelled["experiment_name"] = experiment_name
+    labelled.setdefault("experiment_name", experiment_name)
+    return labelled
+
+
 def _default_tracker(
     *,
     output_dir: Path,
     task_id: str | None,
-    attempt_id: str | None,
+    experiment_run_id: str | None,
     tracking_mode: str = "process",
 ) -> Any:
 
     safe_task_id = task_id or "task"
     # save_to_file=False: a linha vai ao CSV consolidado (append_emissions_row), com lock entre workers.
-    options: dict[str, Any] = {"experiment_id": attempt_id} if attempt_id else {}
+    options: dict[str, Any] = {"experiment_id": experiment_run_id} if experiment_run_id else {}
     return EmissionsTracker(
         project_name=f"workflow-{safe_task_id}",
         output_dir=output_dir.as_posix(),

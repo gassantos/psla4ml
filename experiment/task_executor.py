@@ -53,6 +53,7 @@ class SequentialWorkflowExecutor:
         resume_from: ExperimentRun | None = None,
     ) -> ExperimentRun:
         """Executa o plano topológico, reutilizando tarefas concluídas quando informado."""
+        run_id = resume_from.experiment_run_id if resume_from else str(uuid.uuid4())
         task_runs: list[TaskRun] = []
         statuses: dict[str, TaskStatus] = {}
         task_plan = WorkflowPlanner().plan(definition)
@@ -108,7 +109,7 @@ class SequentialWorkflowExecutor:
                 task_fn = self._task_functions.get(task.task_id)
                 if task_fn is None:
                     raise ValueError(f"Nenhuma função registrada para a tarefa '{task.task_id}'.")
-                task_run = self._execute_task(task, task_fn, previous)
+                task_run = self._execute_task(task, task_fn, previous, run_id, definition.name)
                 if task_run.status is TaskStatus.SUCCEEDED and cache and signature:
                     attempt = task_run.attempts[-1]
                     cache.put(signature, metrics=attempt.metrics, artifacts=attempt.artifacts)
@@ -120,7 +121,7 @@ class SequentialWorkflowExecutor:
             for task in definition.tasks
         )
         return ExperimentRun(
-            experiment_run_id=resume_from.experiment_run_id if resume_from else str(uuid.uuid4()),
+            experiment_run_id=run_id,
             definition_name=definition.name,
             status="failed" if required_failed else "success",
             tasks=task_runs,
@@ -160,6 +161,8 @@ class SequentialWorkflowExecutor:
         task,
         task_fn: TaskCallable,
         previous: TaskRun | None = None,
+        experiment_run_id: str | None = None,
+        definition_name: str | None = None,
     ) -> TaskRun:
         attempts = list(previous.attempts) if previous else []
         if attempts and attempts[-1].status is TaskStatus.FAILED:  # noqa: SIM102
@@ -180,6 +183,8 @@ class SequentialWorkflowExecutor:
                 task.task_id,
                 attempt_number,
                 task_fn,
+                experiment_run_id,
+                definition_name,
             )
             attempts.append(attempt)
             if attempt.status is TaskStatus.SUCCEEDED:
@@ -202,6 +207,8 @@ class SequentialWorkflowExecutor:
         task_id: str,
         attempt_number: int,
         task_fn: TaskCallable,
+        experiment_run_id: str | None = None,
+        definition_name: str | None = None,
     ) -> TaskExecutionAttempt:
         attempt = TaskExecutionAttempt(
             attempt_id=str(uuid.uuid4()),
@@ -215,6 +222,8 @@ class SequentialWorkflowExecutor:
                 task_fn,
                 task_id=task_id,
                 attempt_id=attempt.attempt_id,
+                experiment_run_id=experiment_run_id,
+                experiment_name=definition_name,
             )
             task_resources = output.get("metrics", {}).get("resources", {})
             attempt.metrics = {
@@ -264,6 +273,7 @@ class ParallelWorkflowExecutor(SequentialWorkflowExecutor):
         resume_from: ExperimentRun | None = None,
     ) -> ExperimentRun:
         """Agenda tarefas prontas até o limite de workers e espera cada onda terminar."""
+        run_id = resume_from.experiment_run_id if resume_from else str(uuid.uuid4())
         task_plan = WorkflowPlanner().plan(definition)
         task_by_id = {task.task_id: task for task in task_plan}
         previous_tasks = {
@@ -292,7 +302,10 @@ class ParallelWorkflowExecutor(SequentialWorkflowExecutor):
                     continue
 
                 futures: dict[Future[TaskRun], str] = {
-                    pool.submit(self._execute_ready_task, task, previous_tasks.get(task.task_id)): task.task_id
+                    pool.submit(
+                        self._execute_ready_task, task, previous_tasks.get(task.task_id),
+                        run_id, definition.name,
+                    ): task.task_id
                     for task in ready[:self._max_workers]
                 }
                 for future, task_id in futures.items():
@@ -306,7 +319,7 @@ class ParallelWorkflowExecutor(SequentialWorkflowExecutor):
             for task in definition.tasks
         )
         return ExperimentRun(
-            experiment_run_id=resume_from.experiment_run_id if resume_from else str(uuid.uuid4()),
+            experiment_run_id=run_id,
             definition_name=definition.name,
             status="failed" if required_failed else "success",
             tasks=[task_runs[task.task_id] for task in task_plan],
@@ -361,7 +374,13 @@ class ParallelWorkflowExecutor(SequentialWorkflowExecutor):
             and task.retry_policy.allows_retry(last_attempt.error_type or "")
         )
 
-    def _execute_ready_task(self, task, previous: TaskRun | None) -> TaskRun:
+    def _execute_ready_task(
+        self,
+        task,
+        previous: TaskRun | None,
+        experiment_run_id: str | None = None,
+        definition_name: str | None = None,
+    ) -> TaskRun:
         if previous and not self._is_resume_compatible(task, previous):
             previous = None
         cache = self._cache
@@ -379,7 +398,7 @@ class ParallelWorkflowExecutor(SequentialWorkflowExecutor):
         task_fn = self._task_functions.get(task.task_id)
         if task_fn is None:
             raise ValueError(f"Nenhuma função registrada para a tarefa '{task.task_id}'.")
-        task_run = self._execute_task(task, task_fn, previous)
+        task_run = self._execute_task(task, task_fn, previous, experiment_run_id, definition_name)
         if task_run.status is TaskStatus.SUCCEEDED and cache and signature:
             attempt = task_run.attempts[-1]
             cache.put(signature, metrics=attempt.metrics, artifacts=attempt.artifacts)
