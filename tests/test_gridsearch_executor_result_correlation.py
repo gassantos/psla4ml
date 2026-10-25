@@ -366,3 +366,55 @@ def test_run_grid_search_skips_resource_catalog_without_environments(tmp_path, m
     )
 
     assert list(tmp_path.glob("resource_catalog_*.json")) == []
+
+def test_grid_summary_records_fixed_hyperparameters_from_the_combination_config(monkeypatch, tmp_path):
+    from experiment import persistence
+
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    config = tmp_path / "grid_exp_001.config"
+    config.write_text(
+        "[experiment]\nseed = 42\n[data]\nmax_seq_length = 256\n[model]\ndropout = 0.1\n"
+        "[train]\nepoch = 4\nbatch_size = 8\noptimizer = adamw\nlearning_rate = 1e-05\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "experiment.workflow_templates._build_huggingface_dataset_probe",
+        lambda *_a, **_k: lambda: {"records": 1, "fields": [], "source": "local_json"},
+    )
+    monkeypatch.setattr(
+        "experiment.workflow_templates._launch_experiment",
+        lambda **_k: {"experiment": {"status": "success"}, "resources": {}, "evaluation": {}},
+    )
+
+    run_single_experiment(1, str(config), {"optimizer": "adamw", "batch_size": 8}, parallel_workers=2)
+
+    with open(next(tmp_path.glob("experiment_summary_*.csv")), newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert rows
+    for row in rows:
+        assert row["grid_dropout"] == "0.1" and row["grid_seed"] == "42"
+        assert row["grid_num_epochs"] == "4" and row["grid_max_seq_length"] == "256"
+        assert row["grid_optimizer"] == "adamw" and row["grid_batch_size"] == "8"
+        assert row["grid_environment"] == ""  # sem runtime_profile no config nem na grade
+
+
+def test_grid_summary_prefers_grid_value_over_config_value(monkeypatch, tmp_path):
+    from experiment import persistence
+
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    config = tmp_path / "grid_exp_002.config"
+    config.write_text("[train]\nbatch_size = 16\n[environment]\nruntime_profile = local\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "experiment.workflow_templates._build_huggingface_dataset_probe",
+        lambda *_a, **_k: lambda: {"records": 1, "fields": [], "source": "local_json"},
+    )
+    monkeypatch.setattr(
+        "experiment.workflow_templates._launch_experiment",
+        lambda **_k: {"experiment": {"status": "success"}, "resources": {}, "evaluation": {}},
+    )
+
+    run_single_experiment(2, str(config), {"batch_size": 32, "environment": "colab"})
+
+    with open(next(tmp_path.glob("experiment_summary_*.csv")), newline="", encoding="utf-8") as file:
+        (row, *_) = list(csv.DictReader(file))
+    assert row["grid_batch_size"] == "32" and row["grid_environment"] == "colab"

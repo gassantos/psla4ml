@@ -314,3 +314,29 @@ class TestTimeEstimationScalingBL05:
         assert t_base is not None and t_max is not None
         expected_scale = 4.0 * (5.0 / 3.0)
         assert t_max == pytest.approx(t_base * expected_scale, rel=1e-5)
+
+
+def test_read_config_hyperparameters_returns_effective_values_including_fixed_ones(tmp_path):
+    from gridsearch.grid import read_config_hyperparameters
+
+    config = tmp_path / "grid_exp_000.config"
+    config.write_text(
+        "[experiment]\nseed = 42\n[data]\nmax_seq_length = 256\n[model]\ndropout = 0.1\n"
+        "[train]\nepoch = 4\nbatch_size = 8\noptimizer = adam\nlearning_rate = 1e-05\n",
+        encoding="utf-8",
+    )
+
+    assert read_config_hyperparameters(config) == {
+        "learning_rate": "1e-05", "batch_size": "8", "optimizer": "adam", "dropout": "0.1",
+        "seed": "42", "num_epochs": "4", "max_seq_length": "256",
+    }
+
+
+def test_read_config_hyperparameters_omits_missing_and_unreadable_values(tmp_path):
+    from gridsearch.grid import read_config_hyperparameters
+
+    partial = tmp_path / "partial.config"
+    partial.write_text("[train]\nbatch_size = 16\nlearning_rate =\n", encoding="utf-8")
+
+    assert read_config_hyperparameters(partial) == {"batch_size": "16"}
+    assert read_config_hyperparameters(tmp_path / "missing.config") == {}
