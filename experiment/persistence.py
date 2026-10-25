@@ -11,6 +11,7 @@ import csv
 import hashlib
 import json
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,8 @@ from .workflow import (
 )
 
 logger = logging.getLogger(__name__)
+
+_EMISSIONS_LOCK_TIMEOUT_SEC = 30.0
 
 # Contexto de execução em colunas; grid_* espelha as chaves de gridsearch/config/param_mapping.json.
 CONTEXT_COLUMNS = (
@@ -347,17 +350,52 @@ def _extract_dataset_summary_from_workflow(workflow: ExperimentRun) -> dict[str,
 
 
 def _workflow_summary_csv_path(device_type: str, headers: list[str]) -> Path:
-    """Arquivo do dia; se o cabeçalho existente for outro, usa um arquivo próprio do esquema.
+    """Arquivo do dia; se o cabeçalho existente for outro, usa um arquivo próprio do esquema."""
+    device_type = _resolve_summary_device_type(device_type)
+    suffix = datetime.now().astimezone().strftime("%Y%m%d")
+    return _schema_csv_path(METRICS_DIR, f"experiment_summary_{device_type}-{suffix}", headers)
+
+
+def _schema_csv_path(directory: Path, stem: str, headers: list[str]) -> Path:
+    """``<stem>.csv`` ou, se o cabeçalho existente diferir, ``<stem>_schema-<hash>.csv``.
 
     Anexar a um CSV com cabeçalho diferente desalinharia as colunas sem erro.
     """
-    device_type = _resolve_summary_device_type(device_type)
-    suffix = datetime.now().astimezone().strftime("%Y%m%d")
-    csv_path = METRICS_DIR / f"experiment_summary_{device_type}-{suffix}.csv"
+    csv_path = directory / f"{stem}.csv"
     if _csv_header(csv_path) in (None, headers):
         return csv_path
     schema = hashlib.sha1(",".join(headers).encode("utf-8")).hexdigest()[:8]
-    return METRICS_DIR / f"experiment_summary_{device_type}-{suffix}_schema-{schema}.csv"
+    return directory / f"{stem}_schema-{schema}.csv"
+
+
+def append_emissions_row(
+    values: Mapping[str, Any],
+    *,
+    output_dir: Path | None = None,
+    device_type: str = "",
+) -> Path:
+    """Acrescenta a linha padrão do CodeCarbon ao ``emissions_<DEVICE>-<DATA>.csv`` do dia.
+
+    ``experiment_id`` leva o ``attempt_id`` do workflow, a chave de junção com o
+    ``experiment_summary``. A gravação é serializada entre processos porque o
+    CodeCarbon não trava o arquivo e workers paralelos perderiam linhas.
+    """
+    from filelock import FileLock
+
+    directory = output_dir or METRICS_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    headers = list(values)
+    day = datetime.now().astimezone().strftime("%Y%m%d")
+    stem = f"emissions_{_resolve_summary_device_type(device_type)}-{day}"
+    with FileLock(str(directory / f".{stem}.lock"), timeout=_EMISSIONS_LOCK_TIMEOUT_SEC):
+        csv_path = _schema_csv_path(directory, stem, headers)
+        write_header = not csv_path.exists()
+        with open(csv_path, "a", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=headers)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(values)
+    return csv_path
 
 
 def _csv_header(path: Path) -> list[str] | None:

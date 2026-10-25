@@ -8,6 +8,7 @@ dependencies = [
     "codecarbon>=3.2.2",
     "configparser>=7.2.0",
     "datasets>=4.5.0",
+    "filelock>=3.20.0",
     "numpy>=2.2.6",
     "psutil>=7.2.2",
     "tensorboard>=2.14",

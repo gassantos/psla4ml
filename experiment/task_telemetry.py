@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,9 @@ import torch
 from codecarbon import EmissionsTracker  # type: ignore
 
 from .helpers import METRICS_DIR, compute_cost_usd
+from .persistence import append_emissions_row
+
+logger = logging.getLogger(__name__)
 
 TrackerFactory = Callable[..., Any]
 _TRACKING_MODES = frozenset({"process", "machine"})
@@ -83,6 +87,7 @@ class TaskTelemetryCollector:
             sampler.join(timeout=2)
 
         energy_kwh, emissions_kg_co2 = self._stop_tracker(tracker)
+        emissions_row = _emissions_row(tracker)
         gpu = _gpu_metrics()
         elapsed = time.perf_counter() - started
         peak_ram_mb = max(samples) if samples else _rss_mb(process)
@@ -97,7 +102,17 @@ class TaskTelemetryCollector:
                 energy_kwh, elapsed, self._environment_cost_per_hour_usd
             ),
         }
+        # Fora da janela medida: gravar o CSV nem trava o worker nem entra em task_time_sec.
+        self._persist_emissions(emissions_row)
         return output, metrics, error
+
+    def _persist_emissions(self, row: Mapping[str, Any] | None) -> None:
+        if row is None:
+            return
+        try:
+            append_emissions_row(row, output_dir=self._emissions_output_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Linha do CodeCarbon não gravada no emissions CSV: %s", exc)
 
     def _start_tracker(self, task_id: str | None, attempt_id: str | None) -> Any | None:
         if not self._enable_emissions:
@@ -131,6 +146,12 @@ class TaskTelemetryCollector:
             return None, None
 
 
+def _emissions_row(tracker: Any | None) -> Mapping[str, Any] | None:
+    """Linha padrão (38 colunas) do CodeCarbon; ``None`` se o tracker não a produziu."""
+    values = getattr(getattr(tracker, "final_emissions_data", None), "values", None)
+    return values if isinstance(values, Mapping) else None
+
+
 def _default_tracker(
     *,
     output_dir: Path,
@@ -140,13 +161,14 @@ def _default_tracker(
 ) -> Any:
 
     safe_task_id = task_id or "task"
-    safe_attempt_id = attempt_id or "attempt"
+    # save_to_file=False: a linha vai ao CSV consolidado (append_emissions_row), com lock entre workers.
+    options: dict[str, Any] = {"experiment_id": attempt_id} if attempt_id else {}
     return EmissionsTracker(
         project_name=f"workflow-{safe_task_id}",
         output_dir=output_dir.as_posix(),
-        output_file=f"emissions_{safe_task_id}_{safe_attempt_id}.csv",
-        save_to_file=True,
+        save_to_file=False,
         log_level="error",
+        **options,
         # O CodeCarbon aplica o modo só a CPU e RAM; a GPU segue lendo o dispositivo inteiro (NVML).
         tracking_mode=tracking_mode,
     )
