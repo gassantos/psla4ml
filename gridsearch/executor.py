@@ -25,7 +25,11 @@ from utils.device import get_torch_device
 from utils.log_setup import get_log_queue, setup_worker_logging
 from utils.paths import PathManager
 
-from .grid import create_config_for_combination, generate_parameter_grid
+from .grid import (
+    create_config_for_combination,
+    generate_parameter_grid,
+    read_config_hyperparameters,
+)
 from .sla_prefilter import prefilter_param_grid_by_execution_sla
 from .utils import check_memory_availability, ensure_output_directories
 
@@ -267,6 +271,7 @@ def run_single_experiment(
     # Imports lazy evitam inicialização de CUDA no processo principal.
     from experiment.helpers import (
         detect_execution_environment,
+        execution_context,
         get_machine_name,
         load_config,
         normalize_environment_label,
@@ -319,13 +324,10 @@ def run_single_experiment(
             device_type=_get_device_type(),
             definition=definition,
             context={
-                "grid_experiment_idx": experiment_idx,
-                "grid_params": params,
+                **execution_context(),
+                # O config da combinação traz o valor efetivo de todos os hiperparâmetros, não só os da grade.
+                "grid_params": {**read_config_hyperparameters(config_path), **params},
                 "parallel_workers": parallel_workers,
-                "selected_environment": machine_name,
-                "configured_environment": configured_environment,
-                "requested_environment": requested_environment,
-                "resource_machine_name": machine_name,
             },
         )
         result_data = _project_workflow_result(

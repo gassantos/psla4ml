@@ -15,6 +15,7 @@ from codecarbon import EmissionsTracker  # type: ignore
 from .helpers import METRICS_DIR, compute_cost_usd
 
 TrackerFactory = Callable[..., Any]
+_TRACKING_MODES = frozenset({"process", "machine"})
 
 _CUDA_AVAILABLE: bool | None = None
 _CUDA_AVAILABLE_LOCK = threading.Lock()
@@ -32,8 +33,12 @@ class TaskTelemetryCollector:
         sample_interval_sec: float = 0.1,
         emissions_output_dir: Path | None = None,
         prewarm_cuda_probe: bool = True,
+        tracking_mode: str = "process",
     ) -> None:
+        if tracking_mode not in _TRACKING_MODES:
+            raise ValueError(f"tracking_mode deve ser um de {sorted(_TRACKING_MODES)}: {tracking_mode!r}")
         self._enable_emissions = enable_emissions
+        self._tracking_mode = tracking_mode
         self._environment_cost_per_hour_usd = environment_cost_per_hour_usd
         self._tracker_factory: TrackerFactory = tracker_factory or _default_tracker
         self._uses_default_tracker = tracker_factory is None
@@ -103,6 +108,7 @@ class TaskTelemetryCollector:
                     output_dir=self._emissions_output_dir,
                     task_id=task_id,
                     attempt_id=attempt_id,
+                    tracking_mode=self._tracking_mode,
                 )
                 if self._uses_default_tracker
                 else self._tracker_factory()
@@ -130,6 +136,7 @@ def _default_tracker(
     output_dir: Path,
     task_id: str | None,
     attempt_id: str | None,
+    tracking_mode: str = "process",
 ) -> Any:
 
     safe_task_id = task_id or "task"
@@ -140,6 +147,8 @@ def _default_tracker(
         output_file=f"emissions_{safe_task_id}_{safe_attempt_id}.csv",
         save_to_file=True,
         log_level="error",
+        # O CodeCarbon aplica o modo só a CPU e RAM; a GPU segue lendo o dispositivo inteiro (NVML).
+        tracking_mode=tracking_mode,
     )
 
 
