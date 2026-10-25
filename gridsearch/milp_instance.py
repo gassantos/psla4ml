@@ -1,12 +1,12 @@
 """ MILP Instance Reader — Monta ``PSLA4MLData`` a partir de arquivos persistidos
 ==================================================================================
 
-Lê os arquivos JSON já persistidos pelo pipeline ``gridsearch`` — o config
+Lê os arquivos já persistidos pelo pipeline ``gridsearch`` — o config
 multiambiente (``environments.details``, ex.: ``grid_search_multienv.json``),
-o estado/resultados de uma execução (``grid_search_state_*.json``, produzido
-por ``gridsearch.executor.save_state``) e um perfil de ``sla_profiles.json``
-— e monta a instância de entrada do modelo MILP CC-IP (PSLA4ML, Yuri Frota,
-2026), no formato ``PSLA4MLData``.
+o sumário de execuções (``experiment_summary_*.csv`` em
+``output/experiments/metrics``, uma linha por tentativa de tarefa) e um perfil
+de ``sla_profiles.json`` — e monta a instância de entrada do modelo MILP CC-IP
+(PSLA4ML, Yuri Frota, 2026), no formato ``PSLA4MLData``.
 
 Este módulo **apenas lê e mapeia** dados já persistidos; não detecta
 hardware, não consulta catálogos externos e não estima valores por
@@ -18,16 +18,31 @@ dicionário resultante — cabe a quem mantém ``environments.details``/
 Autor: Gustavo Alexandre
 """
 
+import csv
 import json
 import logging
 import math
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from experiment.helpers import normalize_environment_label
+from experiment.helpers import METRICS_DIR, normalize_environment_label
 
 logger = logging.getLogger(__name__)
+
+SUMMARY_FILE_GLOB = "experiment_summary_*.csv"
+_GRID_RUN_NAME = re.compile(r"^grid-experiment-(\d+)$")
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
+# Colunas do sumário por tarefa (experiment.persistence.append_workflow_csv_rows).
+# O contexto vem de colunas (``grid_*``) ou, no formato legado, de ``experiment_context_json``.
+_SUMMARY_REQUIRED_COLUMNS = frozenset({
+    "experiment_run_id", "definition_name", "workflow_status", "activity",
+    "started_at", "task_time_sec", "energy_kwh", "is_final_attempt",
+})
 
 DEFAULT_PROCESSOR_TYPES = ("CPU", "GPU", "TPU")
 
@@ -93,7 +108,7 @@ class PSLA4MLData:
 # ============================================================================
 
 def read_environments_details(grid_config_path: str | Path) -> dict[str, dict[str, Any]]:
-    """Lê ``environments.details`` de um grid config JSON já persistido.
+    """Lê ambientes persistidos do grid config ou de ``sla_profiles.json``.
 
     Args:
         grid_config_path: Caminho do grid config (ex.:
@@ -104,31 +119,189 @@ def read_environments_details(grid_config_path: str | Path) -> dict[str, dict[st
         arquivo, sem nenhuma transformação.
 
     Raises:
-        ValueError: Se o arquivo não tiver a chave ``environments.details``.
+        ValueError: Se nenhuma fonte persistida tiver ambientes.
     """
-    with open(grid_config_path, encoding="utf-8") as f:
+    config_path = Path(grid_config_path)
+    with open(config_path, encoding="utf-8") as f:
         grid_config = json.load(f)
     details = grid_config.get("environments", {}).get("details")
-    if not details:
-        raise ValueError(
-            f"{grid_config_path} não possui 'environments.details' — "
-            "use um grid config multiambiente (ex.: grid_search_multienv.json)."
-        )
-    return details
+    if details:
+        return details
+
+    profile_environments = _read_environments_from_sla_profiles(config_path)
+    if profile_environments:
+        return profile_environments
+
+    raise ValueError(
+        f"{grid_config_path} não possui 'environments.details' e nenhum sla_profiles.json "
+        "compatível com a chave 'environments'."
+    )
 
 
-def read_grid_search_state(state_path: str | Path) -> dict[str, Any]:
-    """Lê um arquivo ``grid_search_state_*.json`` persistido por ``save_state``.
+def _read_environments_from_sla_profiles(grid_config_path: Path) -> dict[str, dict[str, Any]]:
+    """Fallback para configs runtime-only: usa ``environments`` de sla_profiles."""
+    candidates = [
+        grid_config_path.with_name("sla_profiles.json"),
+        grid_config_path.parent / "sla_profiles.json",
+    ]
+    seen: set[Path] = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen or not path.exists():
+            continue
+        seen.add(resolved)
+        try:
+            with open(path, encoding="utf-8") as f:
+                profiles = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        environments = profiles.get("environments") if isinstance(profiles, dict) else None
+        if isinstance(environments, dict) and environments:
+            return environments
+    return {}
+
+
+def read_experiment_summary(
+    summary_path: str | Path | Sequence[str | Path] | None = None,
+) -> list[dict[str, Any]]:
+    """Lê o ``experiment_summary_*.csv`` e reconstrói um registro por execução do grid.
+
+    O CSV tem uma linha por tentativa de tarefa; as linhas são agrupadas por
+    ``experiment_run_id`` e só execuções de grid geram registro. O índice do grid vem de
+    ``definition_name`` (``grid-experiment-N``); o contexto, das colunas
+    (``configured_environment``, ``grid_<hiperparâmetro>``, ...) ou, no formato
+    legado, de ``experiment_context_json``. ``total_gflops`` vem da coluna ou, no
+    legado, de ``resources_json``.
 
     Args:
-        state_path: Caminho do arquivo de estado.
+        summary_path: Arquivo CSV, diretório com ``experiment_summary_*.csv`` ou
+            lista de ambos (ex.: um CSV local e um do Colab).
+            ``None`` usa ``output/experiments/metrics``. CSVs sem as colunas de
+            telemetria por tarefa (formato legado) são ignorados com aviso.
 
     Returns:
-        Dicionário completo do estado (``timestamp``, ``completed_experiments``,
-        ``results``, ``sla_prefilter``), tal como persistido.
+        Lista de registros com ``experiment_run_id``, ``definition_name``,
+        ``grid_experiment_idx``, ``status``, ``started_at``,
+        ``configured_environment``, ``selected_environment``, ``grid_params`` e
+        ``resources`` (``energy_kwh`` somado sobre todas as tentativas,
+        ``train_time_sec`` e ``total_gflops`` da tarefa de adaptação). Chaves de
+        ``resources`` sem valor no CSV ficam ausentes.
+
+    Raises:
+        FileNotFoundError: Se o arquivo não existir ou o diretório não tiver
+            nenhum ``experiment_summary_*.csv``.
     """
-    with open(state_path, encoding="utf-8") as f:
-        return json.load(f)
+    runs: dict[str, list[dict[str, str]]] = {}
+    for file in _resolve_summary_files(summary_path):
+        with open(file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            fields = set(reader.fieldnames or ())
+            has_context = "configured_environment" in fields or "experiment_context_json" in fields
+            if not (_SUMMARY_REQUIRED_COLUMNS <= fields and has_context):
+                logger.warning("Ignorando %s: sem as colunas de telemetria por tarefa.", file.name)
+                continue
+            for row in reader:
+                runs.setdefault(row["experiment_run_id"], []).append(row)
+
+    records = (_record_from_run_rows(rows) for rows in runs.values())
+    return [record for record in records if record is not None]
+
+
+def _resolve_summary_files(summary_path: str | Path | Sequence[str | Path] | None) -> list[Path]:
+    if isinstance(summary_path, (list, tuple)):
+        return [file for item in summary_path for file in _resolve_summary_files(item)]
+    path = Path(summary_path) if summary_path is not None else METRICS_DIR # type: ignore
+    if path.is_dir():
+        files = sorted(path.glob(SUMMARY_FILE_GLOB))
+        if not files:
+            raise FileNotFoundError(f"Nenhum {SUMMARY_FILE_GLOB} encontrado em {path}.")
+        return files
+    if not path.is_file():
+        raise FileNotFoundError(f"experiment_summary não encontrado: {path}")
+    return [path]
+
+
+def _record_from_run_rows(rows: list[dict[str, str]]) -> dict[str, Any] | None:
+    """Agrega as linhas de uma execução em um registro no formato de ``results``."""
+    context = _context_from_row(rows[0])
+    grid_idx = context.get("grid_experiment_idx")
+    if grid_idx is None:
+        return None
+
+    energies = [v for v in (_to_float(r["energy_kwh"]) for r in rows) if v is not None]
+    adaptation = [r for r in rows if r["activity"] == "adaptation" and r["is_final_attempt"] == "True"]
+    train_times = [v for v in (_to_float(r["task_time_sec"]) for r in adaptation) if v is not None]
+    gflops = [v for v in (_row_total_gflops(r) for r in adaptation) if v is not None]
+
+    resources: dict[str, float] = {}
+    if energies:
+        resources["energy_kwh"] = sum(energies)
+    if train_times:
+        resources["train_time_sec"] = sum(train_times)
+    if gflops:
+        resources["total_gflops"] = gflops[0]
+
+    grid_params = context.get("grid_params")
+    started = [r["started_at"] for r in rows if r["started_at"]]
+    return {
+        "experiment_run_id": rows[0]["experiment_run_id"],
+        "definition_name": rows[0]["definition_name"],
+        "grid_experiment_idx": int(grid_idx),
+        "status": "success" if rows[0]["workflow_status"] == "success" else "failed",
+        "started_at": min(started) if started else None,
+        "configured_environment": context.get("configured_environment"),
+        "selected_environment": context.get("selected_environment"),
+        "grid_params": grid_params if isinstance(grid_params, dict) else {},
+        "resources": resources,
+    }
+
+
+def _context_from_row(row: dict[str, str]) -> dict[str, Any]:
+    """Contexto da execução a partir das colunas ``grid_*`` ou do JSON legado."""
+    if "experiment_context_json" in row:
+        return _loads_object(row["experiment_context_json"])
+    context: dict[str, Any] = {
+        key: row[key] for key in ("configured_environment", "selected_environment") if row.get(key)
+    }
+    grid_run = _GRID_RUN_NAME.match(row.get("definition_name") or "")
+    if grid_run:
+        context["grid_experiment_idx"] = int(grid_run.group(1))
+    context["grid_params"] = {
+        key[len("grid_"):]: _parse_scalar(value)
+        for key, value in row.items()
+        if key.startswith("grid_") and value not in ("", None)
+    }
+    return context
+
+
+def _row_total_gflops(row: dict[str, str]) -> float | None:
+    if row.get("total_gflops") not in (None, ""):
+        return _to_float(row["total_gflops"])
+    return _to_float(_loads_object(row.get("resources_json")).get("total_gflops"))
+
+
+def _parse_scalar(value: str) -> int | float | str:
+    for cast in (int, float):
+        try:
+            return cast(value)
+        except ValueError:
+            continue
+    return value
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _loads_object(text: str | None) -> dict[str, Any]:
+    try:
+        value = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def read_resource_catalog(resource_catalog_path: str | Path) -> dict[str, dict[str, Any]]:
@@ -191,11 +364,20 @@ def _find_result_by_idx(
     results: list[dict[str, Any]],
     grid_experiment_idx: int,
 ) -> dict[str, Any] | None:
-    """Localiza, nos resultados já persistidos, o experimento de índice informado."""
-    for r in results:
-        if r.get("grid_experiment_idx") == grid_experiment_idx:
-            return r
-    return None
+    """Localiza o experimento de índice informado; com índice repetido, o mais recente."""
+    matches = [r for r in results if r.get("grid_experiment_idx") == grid_experiment_idx]
+    if not matches:
+        return None
+    return max(matches, key=lambda r: _started_at_key(r.get("started_at")))
+
+
+def _started_at_key(value: str | None) -> datetime:
+    """Chave de ordenação por instante; CSVs de máquinas em fusos distintos não ordenam como texto."""
+    try:
+        moment = datetime.fromisoformat(value) if value else _EPOCH
+    except ValueError:
+        return _EPOCH
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 def _extract_alpha_weights(
@@ -262,8 +444,8 @@ def build_psla4ml_data(
     Args:
         environments_details: ``environments.details`` já lido de um grid
             config (via :func:`read_environments_details`) — define ``R``.
-        results: Lista ``results`` já lida de um ``grid_search_state_*.json``
-            (via :func:`read_grid_search_state`) — usada para ``e`` e ``Gf``.
+        results: Registros já lidos do ``experiment_summary_*.csv`` (via
+            :func:`read_experiment_summary`) — usados para ``e`` e ``Gf``.
         sla_profile: Perfil de ``sla_profiles.json`` (dict de um profile).
             Fornece ``CM``/``TM``/``Eref``/``MC``/``DS`` via ``constraints``
             e ``alpha1``/``alpha2``/``alpha3`` via ``metrics``/``weights_scalar``.
@@ -415,7 +597,13 @@ def build_psla4ml_data(
         if record is None and target_grid_experiment_idx is not None:
             record = _find_result_by_idx(results, target_grid_experiment_idx)
         if record is not None:
-            Gf = float(record.get("resources", {}).get("total_gflops", 0.0))
+            Gf = _to_float(record.get("resources", {}).get("total_gflops"))
+            if Gf is None or Gf <= 0:
+                raise ValueError(
+                    "O experimento alvo não tem `total_gflops` válido (execução de teste ou sem "
+                    f"telemetria de GFLOPs): {record.get('experiment_run_id', record)}. "
+                    "Informe `Gf`, outro `target_result` ou restrinja os CSVs lidos."
+                )
         else:
             raise ValueError(
                 "Gf não pôde ser determinado: informe `Gf`, `target_result` ou "
@@ -446,28 +634,30 @@ def build_psla4ml_data(
 
 
 # ============================================================================
-# PONTO DE ENTRADA — leitura direta dos arquivos JSON persistidos
+# PONTO DE ENTRADA — leitura direta dos arquivos persistidos
 # ============================================================================
 
 def load_psla4ml_data(
     grid_config_path: str | Path,
-    state_path: str | Path,
+    summary_path: str | Path | Sequence[str | Path] | None = None,
     *,
     sla_profile: dict[str, Any] | None = None,
     target_grid_experiment_idx: int | None = None,
     resource_catalog_path: str | Path | None = None,
     **kwargs: Any,
 ) -> PSLA4MLData:
-    """Lê os arquivos JSON persistidos e monta a instância ``PSLA4MLData``.
+    """Lê os arquivos persistidos e monta a instância ``PSLA4MLData``.
 
     Args:
         grid_config_path: Caminho do grid config multiambiente (ex.:
             ``gridsearch/config/grid_search_multienv.json``).
-        state_path: Caminho do ``grid_search_state_*.json`` já persistido
-            pela execução (``gridsearch.executor.save_state``).
+        summary_path: ``experiment_summary_*.csv`` (ou diretório que os
+            contém) com as execuções persistidas. ``None`` lê todos os CSVs de
+            ``output/experiments/metrics``.
         sla_profile: Perfil de ``sla_profiles.json`` (dict de um profile).
-        target_grid_experiment_idx: Índice do experimento em ``results``
-            usado para ``Gf``.
+        target_grid_experiment_idx: Índice do experimento usado para ``Gf``. O
+            CSV acumula grids diferentes com o mesmo índice; vale a execução
+            mais recente — use ``target_result`` para escolher outra.
         resource_catalog_path: Caminho do ``resource_catalog_*.json``
             persistido pelo estágio de coleta de
             ``gridsearch.executor.run_grid_search``. ``None`` deixa
@@ -480,8 +670,7 @@ def load_psla4ml_data(
         Instância ``PSLA4MLData`` para uso no modelo Gurobi.
     """
     environments_details = read_environments_details(grid_config_path)
-    state = read_grid_search_state(state_path)
-    results = state.get("results", [])
+    results = read_experiment_summary(summary_path)
     resource_catalog = (
         read_resource_catalog(resource_catalog_path) if resource_catalog_path is not None else None
     )
