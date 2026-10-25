@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, mock_open, patch
 
+import pytest
+
 from cli.runners import _prewarm_huggingface_dataset
 
 # ---------------------------------------------------------------------------
@@ -109,3 +111,47 @@ def test_prewarm_dataset_called_before_offline_mode():
     assert prewarm_idx < offline_idx, (
         f"prewarm_dataset (pos={prewarm_idx}) deve ocorrer ANTES de enable_offline (pos={offline_idx})"
     )
+
+
+# ---------------------------------------------------------------------------
+# prewarm_huggingface (helper compartilhado por grid e single)
+# ---------------------------------------------------------------------------
+
+def test_prewarm_huggingface_loads_model_and_hub_dataset():
+    from cli.runners import prewarm_huggingface
+
+    with patch("cli.runners._resolve_model_id_for_prewarm", return_value="bert-base-uncased"), \
+         patch("cli.runners._prewarm_huggingface_assets") as assets, \
+         patch("cli.runners._prewarm_huggingface_dataset") as dataset:
+        prewarm_huggingface("config.cfg", {
+            "hf_dataset_source": "hub", "hf_dataset_id": "nyu-mll/glue", "hf_dataset_config": "mrpc",
+        })
+
+    assets.assert_called_once_with("bert-base-uncased")
+    dataset.assert_called_once_with(dataset_id="nyu-mll/glue", dataset_config="mrpc")
+
+
+def test_prewarm_huggingface_skips_dataset_when_not_from_hub():
+    from cli.runners import prewarm_huggingface
+
+    with patch("cli.runners._resolve_model_id_for_prewarm", return_value="bert-base-uncased"), \
+         patch("cli.runners._prewarm_huggingface_assets") as assets, \
+         patch("cli.runners._prewarm_huggingface_dataset") as dataset:
+        prewarm_huggingface("config.cfg", {"hf_dataset_source": "local_json"})
+        prewarm_huggingface("config.cfg", None)
+
+    assert assets.call_count == 2
+    dataset.assert_not_called()
+
+
+def test_prewarm_huggingface_strict_propagates_failure_and_non_strict_only_warns(caplog):
+    from cli.runners import prewarm_huggingface
+
+    with patch("cli.runners._resolve_model_id_for_prewarm", return_value="m"), \
+         patch("cli.runners._prewarm_huggingface_assets", side_effect=OSError("sem rede")):
+        with pytest.raises(OSError, match="sem rede"):
+            prewarm_huggingface("config.cfg")
+        with caplog.at_level("WARNING", logger="cli.runners"):
+            prewarm_huggingface("config.cfg", strict=False)
+
+    assert "Prewarm Hugging Face falhou" in caplog.text
