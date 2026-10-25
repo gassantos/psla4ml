@@ -5,6 +5,16 @@ import math
 
 import pytest
 
+from experiment import persistence
+from experiment.workflow import (
+    ExperimentDefinition,
+    ExperimentRun,
+    TaskActivity,
+    TaskDefinition,
+    TaskExecutionAttempt,
+    TaskRun,
+    TaskStatus,
+)
 from gridsearch.milp_instance import (
     DEFAULT_COST_USD,
     DEFAULT_DISK_GB,
@@ -17,7 +27,7 @@ from gridsearch.milp_instance import (
     build_psla4ml_data,
     load_psla4ml_data,
     read_environments_details,
-    read_grid_search_state,
+    read_experiment_summary,
     read_resource_catalog,
 )
 
@@ -65,10 +75,83 @@ RESOURCE_CATALOG = {
 
 class TestFindResultByIdx:
     def test_finds_matching_experiment(self):
-        assert _find_result_by_idx(RESULTS, 1)["selected_environment"] == "colab"
+        assert _find_result_by_idx(RESULTS, 1)["selected_environment"] == "colab" # type: ignore
 
     def test_returns_none_when_absent(self):
         assert _find_result_by_idx(RESULTS, 999) is None
+
+    def test_repeated_index_resolves_to_most_recent_run(self):
+        results = [
+            {"grid_experiment_idx": 0, "started_at": "2026-10-18T10:00:00-03:00", "tag": "old"},
+            {"grid_experiment_idx": 0, "started_at": "2026-10-20T10:00:00-03:00", "tag": "new"},
+            {"grid_experiment_idx": 0, "started_at": "2026-10-19T10:00:00-03:00", "tag": "mid"},
+        ]
+        assert _find_result_by_idx(results, 0)["tag"] == "new" # type: ignore
+
+    def test_repeated_index_compares_instants_across_time_zones(self):
+        results = [
+            {"grid_experiment_idx": 0, "started_at": "2026-10-18T23:00:00-03:00", "tag": "local"},
+            {"grid_experiment_idx": 0, "started_at": "2026-10-19T00:22:00+00:00", "tag": "colab"},
+        ]
+        # 23:00-03:00 = 02:00Z, posterior a 00:22Z, apesar de ordenar antes como texto.
+        assert _find_result_by_idx(results, 0)["tag"] == "local" # type: ignore
+
+
+def _grid_run(
+    run_id, idx, *, env="LOCAL", workflow_status="success", energy=0.0018,
+    adapt_time=3600.0, gflops=521.93, started="2026-10-20T10:00:00-03:00", grid=True,
+    params=None,
+):
+    """Cria uma execução T0 -> T2 e o contexto que o grid grava no CSV."""
+    def task(task_id, activity, resources, status=TaskStatus.SUCCEEDED):
+        attempt = TaskExecutionAttempt(
+            f"{run_id}-{task_id}", 1, status, started_at=started,
+            metrics={"resources": resources},
+        )
+        return (
+            TaskDefinition(task_id, task_id, activity=activity),
+            TaskRun(task_id, task_id, "train", status, [attempt]),
+        )
+
+    adapt_status = TaskStatus.SUCCEEDED if workflow_status == "success" else TaskStatus.FAILED
+    adapt_resources = {"task_time_sec": adapt_time, "total_gflops": gflops}
+    if energy is not None:
+        adapt_resources["energy_kwh"] = energy
+    parts = [
+        task("ingest_dataset", TaskActivity.INGESTION, {"task_time_sec": 1.5}),
+        task("adapt_model", TaskActivity.ADAPTATION, adapt_resources, adapt_status),
+    ]
+    name = f"grid-experiment-{idx}" if grid else f"single-train_task{idx}"
+    definition = ExperimentDefinition(name, tuple(d for d, _ in parts))
+    workflow = ExperimentRun(run_id, definition.name, workflow_status, [t for _, t in parts])
+    context = (
+        {
+            "grid_params": params or {"batch_size": 8},
+            "configured_environment": env, "selected_environment": "machine-1",
+        }
+        if grid else {}
+    )
+    return workflow, definition, context
+
+
+def _write_summary(monkeypatch, directory, runs):
+    """Grava as execuções pelo writer real e devolve o caminho do CSV gerado."""
+    monkeypatch.setattr(persistence, "METRICS_DIR", directory)
+    path = None
+    for workflow, definition, context in runs:
+        path = persistence.append_workflow_csv_rows(
+            workflow, device_type="CPU", definition=definition, context=context,
+        )
+    return path
+
+
+@pytest.fixture
+def summary_csv(monkeypatch, tmp_path):
+    """CSV equivalente a RESULTS: um experimento de grid por ambiente."""
+    return _write_summary(monkeypatch, tmp_path, [
+        _grid_run("run-local", 0, env="LOCAL", energy=0.0018, gflops=521.93),
+        _grid_run("run-colab", 1, env="COLAB", energy=0.0005, gflops=300.0),
+    ])
 
 
 class TestExtractAlphaWeights:
@@ -288,6 +371,12 @@ class TestBuildPsla4mlData:
         with pytest.raises(ValueError, match="Gf"):
             build_psla4ml_data(ENVIRONMENTS_DETAILS, RESULTS)
 
+    @pytest.mark.parametrize("resources", [{}, {"total_gflops": None}, {"total_gflops": 0.0}])
+    def test_raises_when_target_experiment_has_no_valid_gflops(self, resources):
+        results = [{"grid_experiment_idx": 0, "experiment_run_id": "run-x", "resources": resources}]
+        with pytest.raises(ValueError, match="total_gflops"):
+            build_psla4ml_data(ENVIRONMENTS_DETAILS, results, target_grid_experiment_idx=0)
+
     def test_raises_on_empty_environments(self):
         with pytest.raises(ValueError, match="environments_details"):
             build_psla4ml_data({}, RESULTS, target_grid_experiment_idx=0)
@@ -339,18 +428,16 @@ class TestResourceCatalogFallback:
         )
         assert data.e["colab"] == pytest.approx(0.0005)  # do historico, nao do catalogo
 
-    def test_load_psla4ml_data_with_resource_catalog_path(self, tmp_path):
+    def test_load_psla4ml_data_with_resource_catalog_path(self, tmp_path, summary_csv):
         grid_config_path = tmp_path / "grid.json"
         grid_config_path.write_text(json.dumps({
             "environments": {"details": ENVIRONMENTS_DETAILS},
         }), encoding="utf-8")
-        state_path = tmp_path / "state.json"
-        state_path.write_text(json.dumps({"results": RESULTS}), encoding="utf-8")
         catalog_path = tmp_path / "resource_catalog.json"
         catalog_path.write_text(json.dumps(RESOURCE_CATALOG), encoding="utf-8")
 
         data = load_psla4ml_data(
-            grid_config_path, state_path,
+            grid_config_path, summary_csv,
             sla_profile=SLA_PROFILE_BALANCEADO, target_grid_experiment_idx=0,
             resource_catalog_path=catalog_path,
         )
@@ -366,9 +453,9 @@ class TestReadResourceCatalog:
 
 
 class TestReadPersistedFiles:
-    def test_read_environments_details_from_real_config(self):
-        with pytest.raises(ValueError, match="environments.details"):
-            read_environments_details("gridsearch/config/grid_search_multienv.json")
+    def test_read_environments_details_from_real_config_uses_sla_profiles_fallback(self):
+        details = read_environments_details("gridsearch/config/grid_search_multienv.json")
+        assert set(details) >= {"local", "colab", "gcp", "aws", "azure"}
 
     def test_read_environments_details_raises_when_absent(self, tmp_path):
         path = tmp_path / "no_env.json"
@@ -376,25 +463,163 @@ class TestReadPersistedFiles:
         with pytest.raises(ValueError, match="environments.details"):
             read_environments_details(path)
 
-    def test_read_grid_search_state(self, tmp_path):
-        path = tmp_path / "state.json"
-        path.write_text(json.dumps({"results": RESULTS, "completed_experiments": [0, 1]}), encoding="utf-8")
-        state = read_grid_search_state(path)
-        assert state["results"] == RESULTS
+    def test_read_experiment_summary_aggregates_one_record_per_grid_run(self, summary_csv):
+        records = {r["grid_experiment_idx"]: r for r in read_experiment_summary(summary_csv)}
 
-    def test_load_psla4ml_data_end_to_end(self, tmp_path):
+        assert set(records) == {0, 1}
+        local = records[0]
+        assert local["experiment_run_id"] == "run-local"
+        assert local["status"] == "success"
+        assert local["configured_environment"] == "LOCAL"
+        assert local["selected_environment"] == "machine-1"
+        assert local["grid_params"] == {"batch_size": 8}
+        assert local["started_at"] == "2026-10-20T10:00:00-03:00"
+        assert local["resources"] == {
+            "energy_kwh": pytest.approx(0.0018),
+            "train_time_sec": pytest.approx(3600.0),
+            "total_gflops": pytest.approx(521.93),
+        }
+
+    def test_read_experiment_summary_restores_typed_grid_params_from_columns(self, monkeypatch, tmp_path):
+        params = {"learning_rate": 1e-05, "optimizer": "adamw", "seed": 42, "environment": "colab"}
+        path = _write_summary(monkeypatch, tmp_path, [_grid_run("run-1", 0, params=params)])
+
+        (record,) = read_experiment_summary(path)
+
+        assert record["grid_params"] == params
+
+    def test_read_experiment_summary_reads_legacy_json_context_format(self, tmp_path):
+        legacy = tmp_path / "experiment_summary_GPU-20261018.csv"
+        legacy.write_text(
+            "experiment_run_id,definition_name,workflow_status,activity,started_at,task_time_sec,"
+            "energy_kwh,is_final_attempt,resources_json,experiment_context_json\n"
+            'run-old,grid-experiment-4,success,adaptation,2026-10-18T02:13:53-03:00,40.5,0.002,True,'
+            '"{""total_gflops"": 695.9}",'
+            '"{""configured_environment"": ""LOCAL"", ""grid_experiment_idx"": 4, '
+            '""grid_params"": {""batch_size"": 8}}"\n',
+            encoding="utf-8",
+        )
+
+        (record,) = read_experiment_summary(legacy)
+
+        assert record["grid_experiment_idx"] == 4
+        assert record["configured_environment"] == "LOCAL"
+        assert record["grid_params"] == {"batch_size": 8}
+        assert record["resources"] == {
+            "energy_kwh": pytest.approx(0.002),
+            "train_time_sec": pytest.approx(40.5),
+            "total_gflops": pytest.approx(695.9),
+        }
+
+    def test_read_experiment_summary_sums_energy_over_all_tasks(self, monkeypatch, tmp_path):
+        workflow, definition, context = _grid_run("run-1", 0, energy=0.5)
+        workflow.tasks[0].attempts[0].metrics["resources"]["energy_kwh"] = 0.25
+        path = _write_summary(monkeypatch, tmp_path, [(workflow, definition, context)])
+
+        (record,) = read_experiment_summary(path)
+
+        assert record["resources"]["energy_kwh"] == pytest.approx(0.75)
+        assert record["resources"]["train_time_sec"] == pytest.approx(3600.0)  # só a adaptação
+
+    def test_read_experiment_summary_omits_energy_when_not_collected(self, monkeypatch, tmp_path):
+        path = _write_summary(monkeypatch, tmp_path, [_grid_run("run-1", 0, energy=None)]) # type: ignore
+
+        (record,) = read_experiment_summary(path)
+
+        assert "energy_kwh" not in record["resources"]
+
+    def test_read_experiment_summary_marks_failed_workflow(self, monkeypatch, tmp_path):
+        path = _write_summary(monkeypatch, tmp_path, [
+            _grid_run("run-1", 0, workflow_status="failed"),
+        ])
+
+        (record,) = read_experiment_summary(path)
+
+        assert record["status"] == "failed"
+
+    def test_read_experiment_summary_skips_runs_outside_the_grid(self, monkeypatch, tmp_path):
+        path = _write_summary(monkeypatch, tmp_path, [
+            _grid_run("single-run", 0, grid=False),
+            _grid_run("grid-run", 3),
+        ])
+
+        records = read_experiment_summary(path)
+
+        assert [r["experiment_run_id"] for r in records] == ["grid-run"]
+
+    def test_read_experiment_summary_reads_every_csv_in_a_directory(self, monkeypatch, tmp_path):
+        first = _write_summary(monkeypatch, tmp_path, [_grid_run("run-a", 0)])
+        assert first is not None
+        (tmp_path / "experiment_summary_GPU-20260101.csv").write_text(
+            first.read_text(encoding="utf-8").replace("run-a", "run-b"), encoding="utf-8",
+        )
+
+        records = read_experiment_summary(tmp_path)
+
+        assert sorted(r["experiment_run_id"] for r in records) == ["run-a", "run-b"]
+
+    def test_read_experiment_summary_accepts_an_explicit_list_of_files(self, monkeypatch, tmp_path):
+        first = _write_summary(monkeypatch, tmp_path, [_grid_run("run-a", 0)])
+        second = tmp_path / "experiment_summary_GPU-20260101.csv"
+        assert first is not None
+        second.write_text(first.read_text(encoding="utf-8").replace("run-a", "run-b"), encoding="utf-8")
+        third = tmp_path / "experiment_summary_GPU-20260102.csv"
+        third.write_text(first.read_text(encoding="utf-8").replace("run-a", "run-c"), encoding="utf-8")
+
+        records = read_experiment_summary([first, second])
+
+        assert sorted(r["experiment_run_id"] for r in records) == ["run-a", "run-b"]  # run-c fica de fora
+
+    def test_read_experiment_summary_ignores_legacy_csv_without_task_columns(self, tmp_path):
+        (tmp_path / "experiment_summary_CPU-20260101.csv").write_text(
+            "experiment_id,seed,status\nexp-1,42,success\n", encoding="utf-8",
+        )
+
+        assert read_experiment_summary(tmp_path) == []
+
+    def test_read_experiment_summary_defaults_to_metrics_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("gridsearch.milp_instance.METRICS_DIR", tmp_path)
+        _write_summary(monkeypatch, tmp_path, [_grid_run("run-1", 0)])
+
+        assert [r["experiment_run_id"] for r in read_experiment_summary()] == ["run-1"]
+
+    def test_read_experiment_summary_raises_when_nothing_to_read(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            read_experiment_summary(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            read_experiment_summary(tmp_path / "missing.csv")
+
+    def test_summary_records_feed_the_instance_like_persisted_results(self, summary_csv):
+        data = build_psla4ml_data(
+            ENVIRONMENTS_DETAILS, read_experiment_summary(summary_csv),
+            sla_profile=SLA_PROFILE_BALANCEADO, target_grid_experiment_idx=1,
+        )
+
+        assert data.Gf == pytest.approx(300.0)
+        assert data.e == {"local": pytest.approx(0.0018), "colab": pytest.approx(0.0005)}
+
+    def test_load_psla4ml_data_end_to_end(self, tmp_path, summary_csv):
         grid_config_path = tmp_path / "grid.json"
         grid_config_path.write_text(json.dumps({
             "environments": {"details": ENVIRONMENTS_DETAILS},
         }), encoding="utf-8")
-        state_path = tmp_path / "state.json"
-        state_path.write_text(json.dumps({"results": RESULTS}), encoding="utf-8")
 
         data = load_psla4ml_data(
-            grid_config_path, state_path,
+            grid_config_path, summary_csv,
             sla_profile=SLA_PROFILE_BALANCEADO, target_grid_experiment_idx=0,
         )
         assert isinstance(data, PSLA4MLData)
         assert data.R == ["local", "colab"]
         assert data.Gf == pytest.approx(521.93)
+
+    def test_load_psla4ml_data_reads_default_metrics_dir(self, monkeypatch, tmp_path, summary_csv):
+        monkeypatch.setattr("gridsearch.milp_instance.METRICS_DIR", tmp_path)
+        grid_config_path = tmp_path / "grid.json"
+        grid_config_path.write_text(json.dumps({
+            "environments": {"details": ENVIRONMENTS_DETAILS},
+        }), encoding="utf-8")
+
+        data = load_psla4ml_data(grid_config_path, target_grid_experiment_idx=1)
+
+        assert data.Gf == pytest.approx(300.0)
 
