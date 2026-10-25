@@ -91,6 +91,30 @@ def _enable_hf_offline_mode() -> None:
     logger.info("HF_HUB_OFFLINE=1 ativado para execução do grid.")
 
 
+def prewarm_huggingface(
+    base_config_path: str,
+    dataset_overrides: dict[str, str] | None = None,
+    *,
+    strict: bool = True,
+) -> None:
+    """Carrega modelo e dataset HF no cache antes da janela medida pela telemetria.
+
+    Com ``strict=False`` uma falha vira aviso: o download passa a entrar no tempo
+    e na energia de ``ingest_dataset``/``adapt_model``, mas a execução não aborta.
+    """
+    try:
+        _prewarm_huggingface_assets(_resolve_model_id_for_prewarm(base_config_path))
+        if dataset_overrides and dataset_overrides.get("hf_dataset_source") == "hub":
+            _prewarm_huggingface_dataset(
+                dataset_id=dataset_overrides.get("hf_dataset_id", ""),
+                dataset_config=dataset_overrides.get("hf_dataset_config"),
+            )
+    except Exception as exc:
+        if strict:
+            raise
+        logger.warning("Prewarm Hugging Face falhou; downloads podem entrar na medição: %s", exc)
+
+
 def validate_paths(config_path: str, grid_config_path: str | None = None) -> bool:
     """
     Valida se os caminhos de configuração existem.
@@ -116,6 +140,21 @@ def validate_paths(config_path: str, grid_config_path: str | None = None) -> boo
     return True
 
 
+def single_run_context(config_path: str) -> dict:
+    """Contexto do ``experiment_summary`` de uma execução single, no formato do grid.
+
+    Os hiperparâmetros vêm do próprio config, pelo mesmo ``param_mapping.json`` do grid.
+    """
+    from experiment.helpers import execution_context
+    from gridsearch.grid import read_config_hyperparameters
+
+    return {
+        **execution_context(),
+        "parallel_workers": 1,
+        "grid_params": read_config_hyperparameters(config_path),
+    }
+
+
 def run_single_experiment(
     config_path: str,
     train_dataset: str = DEFAULT_TRAIN_DATASET,
@@ -139,6 +178,7 @@ def run_single_experiment(
 
     if not validate_paths(config_path):
         raise FileNotFoundError(f"Arquivo de configuração não encontrado: {config_path}")
+    prewarm_huggingface(config_path, strict=False)
     config = LauncherWorkflowConfig(
         name=f"single-{train_dataset}",
         config_path=config_path,
@@ -157,7 +197,12 @@ def run_single_experiment(
         telemetry=TaskTelemetryCollector(enable_emissions=monitoring),
     ).execute(definition)
     run_dir = write_workflow_run(workflow)
-    append_workflow_csv_rows(workflow, device_type=get_torch_device()["type"], definition=definition)
+    append_workflow_csv_rows(
+        workflow,
+        device_type=get_torch_device()["type"],
+        definition=definition,
+        context=single_run_context(config_path),
+    )
     if workflow.status != "success":
         raise RuntimeError(f"Workflow single falhou. Manifesto: {run_dir}")
     return workflow
@@ -433,13 +478,7 @@ def run_grid_search_experiments(
     if tpu_cores > 1 and parallel > 1:
         raise ValueError("TPU multicore requer --parallel 1 para evitar spawn aninhado.")
 
-    model_id_or_path = _resolve_model_id_for_prewarm(base_config_path)
-    _prewarm_huggingface_assets(model_id_or_path)
-    if dataset_overrides and dataset_overrides.get("hf_dataset_source") == "hub":
-        _prewarm_huggingface_dataset(
-            dataset_id=dataset_overrides.get("hf_dataset_id", ""),
-            dataset_config=dataset_overrides.get("hf_dataset_config"),
-        )
+    prewarm_huggingface(base_config_path, dataset_overrides)
     _enable_hf_offline_mode()
 
     # Carrega configuração da grade

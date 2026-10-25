@@ -22,7 +22,7 @@ from experiment.generic_workflow import (
     build_generic_workflow,
     load_generic_workflow_spec,
 )
-from experiment.helpers import load_config
+from experiment.helpers import execution_context, load_config
 from experiment.persistence import (
     append_workflow_csv_rows,
     load_workflow_run,
@@ -44,8 +44,10 @@ from utils.device import get_torch_device
 
 from .runners import (
     _build_dataset_overrides,
+    prewarm_huggingface,
     run_grid_search_experiments,
     run_skyband_analysis,
+    single_run_context,
 )
 
 
@@ -91,6 +93,8 @@ class SingleCommand(Command):
 
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
         dataset_overrides = _build_dataset_overrides(args)
+        # Cache quente antes de medir, como no grid; evita contar download no tempo/energia.
+        prewarm_huggingface(args.config, dataset_overrides, strict=False)
         if dataset_overrides:
             self._execute_huggingface_workflow(args, dataset_overrides)
         else:
@@ -155,7 +159,10 @@ class SingleCommand(Command):
             telemetry=TaskTelemetryCollector(enable_emissions=monitoring),
         ).execute(definition, resume_from=resume_from)
         run_dir = write_workflow_run(workflow)
-        append_workflow_csv_rows(workflow, device_type=device_type, definition=definition)
+        append_workflow_csv_rows(
+            workflow, device_type=device_type, definition=definition,
+            context=single_run_context(args.config),
+        )
         if workflow.status != "success":
             raise RuntimeError(f"Workflow Hugging Face falhou. Manifesto: {run_dir}")
 
@@ -195,7 +202,10 @@ class SingleCommand(Command):
             telemetry=TaskTelemetryCollector(enable_emissions=monitoring),
         ).execute(build_launcher_workflow(config), resume_from=resume_from)
         run_dir = write_workflow_run(workflow)
-        append_workflow_csv_rows(workflow, device_type=device_type, definition=build_launcher_workflow(config))
+        append_workflow_csv_rows(
+            workflow, device_type=device_type, definition=build_launcher_workflow(config),
+            context=single_run_context(args.config),
+        )
         if workflow.status != "success":
             raise RuntimeError(f"Workflow single falhou. Manifesto: {run_dir}")
 
@@ -254,7 +264,10 @@ class BertPliWorkflowCommand(Command):
             task_functions, telemetry=TaskTelemetryCollector(enable_emissions=monitoring)
         ).execute(definition)
         run_dir = write_workflow_run(workflow)
-        append_workflow_csv_rows(workflow, device_type=get_torch_device()["type"], definition=definition)
+        append_workflow_csv_rows(
+            workflow, device_type=get_torch_device()["type"], definition=definition,
+            context=execution_context(),
+        )
         if args.workflow_dry_run:
             print(f"Workflow BERT-PLI validado sem treinamento: {run_dir}")
             for command in commands:
@@ -284,7 +297,10 @@ class GenericWorkflowCommand(Command):
             ),
         ).execute(definition)
         run_dir = write_workflow_run(workflow)
-        append_workflow_csv_rows(workflow, device_type=get_torch_device()["type"], definition=definition)
+        append_workflow_csv_rows(
+            workflow, device_type=get_torch_device()["type"], definition=definition,
+            context=execution_context(),
+        )
         if args.workflow_dry_run:
             print(f"Workflow generico validado sem executar comandos: {run_dir}")
             for command in commands:

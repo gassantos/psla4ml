@@ -12,7 +12,12 @@ import configparser
 import logging
 import os
 import platform
+import shutil
 from datetime import datetime
+from functools import lru_cache
+from typing import Any
+
+import psutil
 
 from utils.paths import PathManager
 
@@ -121,6 +126,48 @@ def detect_execution_environment() -> str:
     if any(env.get(key) for key in ("AWS_EXECUTION_ENV", "AWS_REGION", "AWS_DEFAULT_REGION", "LAMBDA_TASK_ROOT", "ECS_CONTAINER_METADATA_URI", "ECS_CONTAINER_METADATA_URI_V4")):
         return "AWS"
     return "LOCAL"
+
+
+@lru_cache(maxsize=1)
+def _static_hardware() -> tuple[int, int, str | None]:
+    """CPU lógicas, nº de GPUs e modelo(s); fixos no processo e custosos de consultar no CUDA."""
+    gpu_count, gpu_model = 0, None
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            gpu_model = ", ".join(dict.fromkeys(torch.cuda.get_device_name(i) for i in range(gpu_count)))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Detecção de GPU indisponível: %s", exc)
+    return psutil.cpu_count(logical=True) or 1, gpu_count, gpu_model
+
+
+def hardware_info() -> dict[str, Any]:
+    """CPU, GPU e disco da máquina, nas colunas do ``experiment_summary`` (sem rede nem benchmark).
+
+    O disco é o do diretório de saída das métricas e é relido a cada chamada.
+    """
+    cpu_count, gpu_count, gpu_model = _static_hardware()
+    disk = shutil.disk_usage(METRICS_DIR)
+    return {
+        "cpu_count": cpu_count,
+        "gpu_count": gpu_count,
+        "gpu_model": gpu_model,
+        "disk_total_gb": round(disk.total / 1024 ** 3, 2),
+        "disk_free_gb": round(disk.free / 1024 ** 3, 2),
+    }
+
+
+def execution_context() -> dict[str, Any]:
+    """Ambiente, máquina e hardware onde a execução ocorre, nas colunas do ``experiment_summary``."""
+    machine_name = get_machine_name()
+    return {
+        "selected_environment": machine_name,
+        "configured_environment": detect_execution_environment(),
+        "resource_machine_name": machine_name,
+        **hardware_info(),
+    }
 
 
 def load_config(path: str) -> configparser.ConfigParser:

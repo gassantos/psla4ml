@@ -56,6 +56,7 @@ from .helpers import (
 from .persistence import (
     append_workflow_csv_rows,
     build_result_dict,
+    legacy_result_context,
     write_json_result,
     write_workflow_run,
 )
@@ -389,12 +390,7 @@ def execute_experiment(
     append_workflow_csv_rows(
         workflow,
         device_type=device_type,
-        context={
-            "experiment": result["experiment"],
-            "environment": result["environment"],
-            "execution": result["execution"],
-            "hyperparameters": result["hyperparameters"],
-        },
+        context=legacy_result_context(result),
     )
 
     print(f"[OK] Wrapper finalizou em {exec_time:.2f} segundos - {exp['name']} ({status})")
