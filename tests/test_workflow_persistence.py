@@ -1,9 +1,10 @@
-"""Testes de persistência dos manifestos P1 de workflow."""
+﻿"""Testes de persistência dos manifestos P1 de workflow."""
 
 import csv
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -110,11 +111,80 @@ def test_append_workflow_csv_rows_writes_one_row_per_task_attempt(monkeypatch, t
     assert rows[0]["task_id"] == "train"
     assert rows[0]["activity"] == "adaptation"
     assert rows[0]["task_time_sec"] == "12.5"
-    assert json.loads(rows[0]["evaluation_json"]) == {"f1_score": 0.9}
     assert rows[0]["root_error_type"] == ""
-    assert json.loads(rows[0]["experiment_context_json"]) == {
-        "selected_environment": "my-laptop",
+    assert rows[0]["selected_environment"] == "my-laptop"
+    assert "experiment_context_json" not in rows[0]
+    assert rows[0]["configured_environment"] == ""  # chave ausente no contexto -> coluna vazia
+
+
+def test_append_workflow_csv_rows_expands_context_into_columns(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED)])
+
+    csv_path = persistence.append_workflow_csv_rows(
+        workflow,
+        device_type="CPU",
+        context={
+            "parallel_workers": 2,
+            "selected_environment": "LOCAL",
+            "configured_environment": "COLAB",
+            "resource_machine_name": "host-1",
+            "requested_environment": "AWS",
+            "grid_params": {"learning_rate": 1e-05, "batch_size": 8, "optimizer": "adamw"},
+        },
+    )
+
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        (row,) = list(csv.DictReader(file))
+    assert row["parallel_workers"] == "2"
+    assert row["selected_environment"] == "LOCAL"
+    assert row["configured_environment"] == "COLAB"
+    assert row["resource_machine_name"] == "host-1"
+    assert row["grid_learning_rate"] == "1e-05"
+    assert row["grid_batch_size"] == "8"
+    assert row["grid_optimizer"] == "adamw"
+    assert row["grid_dropout"] == ""  # hiperparâmetro não usado nesta combinação
+    assert "requested_environment" not in row and "grid_params" not in row
+
+
+def test_summary_csv_header_is_flat_and_has_no_duplicate_columns(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED)])
+
+    csv_path = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        header = next(csv.reader(file))
+    assert len(header) == len(set(header))
+    assert not [name for name in header if name.endswith("_json")]
+    expected = {
+        "total_gflops",
+        *persistence.CONTEXT_COLUMNS, *persistence.GRID_PARAM_COLUMNS,
     }
+    assert expected <= set(header)
+
+
+def test_append_workflow_csv_rows_warns_and_skips_unmapped_context_keys(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED)])
+
+    with caplog.at_level("WARNING", logger=persistence.logger.name):
+        csv_path = persistence.append_workflow_csv_rows(
+            workflow, device_type="CPU",
+            context={"grid_params": {"weight_decay": 0.01, "batch_size": 8}, "surprise": 1},
+        )
+
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        (row,) = list(csv.DictReader(file))
+    assert row["grid_batch_size"] == "8"
+    assert "grid_params.weight_decay" in caplog.text and "surprise" in caplog.text
+
+
+def test_grid_param_columns_follow_param_mapping():
+    mapping_path = Path(__file__).parents[1] / "gridsearch" / "config" / "param_mapping.json"
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))["mapping"]
+
+    assert set(persistence.GRID_PARAM_NAMES) == set(mapping)
 
 
 def test_append_workflow_csv_rows_writes_root_error_type_for_infra_error(monkeypatch, tmp_path):
@@ -285,6 +355,7 @@ def test_daily_summary_csv_has_expected_filename_and_field_formats(monkeypatch, 
                             "energy_kwh": 0.0012,
                             "emissions_kg_co2": 0.0003,
                             "cost_usd": 0.00014,
+                            "total_gflops": 695.9,
                         },
                         "evaluation": {"f1_score": 0.9},
                     },
@@ -320,6 +391,7 @@ def test_daily_summary_csv_has_expected_filename_and_field_formats(monkeypatch, 
         "energy_kwh",
         "emissions_kg_co2",
         "cost_usd",
+        "total_gflops",
     ):
         assert row[field] != ""
         value = float(row[field])
@@ -335,20 +407,9 @@ def test_daily_summary_csv_has_expected_filename_and_field_formats(monkeypatch, 
     datetime.fromisoformat(row["started_at"])
     datetime.fromisoformat(row["completed_at"])
 
-    # Colunas JSON devem ser válidas e com formato de objeto.
-    resources_json = json.loads(row["resources_json"])
-    evaluation_json = json.loads(row["evaluation_json"])
-    artifacts_json = json.loads(row["artifacts_json"])
-    context_json = json.loads(row["experiment_context_json"])
-
-    assert isinstance(resources_json, dict)
-    assert isinstance(evaluation_json, dict)
-    assert isinstance(artifacts_json, dict)
-    assert isinstance(context_json, dict)
-    assert resources_json["task_time_sec"] == 60.0
-    assert evaluation_json["f1_score"] == 0.9
-    assert artifacts_json["checkpoint"] == "model.pt"
-    assert context_json["selected_environment"] == "my-laptop"
+    # O contexto vai em colunas e a coluna JSON antiga não é mais escrita.
+    assert row["selected_environment"] == "my-laptop"
+    assert "experiment_context_json" not in row
 
 
 def test_append_workflow_csv_rows_propagates_dataset_statistics_columns(monkeypatch, tmp_path):
@@ -413,3 +474,148 @@ def test_append_workflow_csv_rows_propagates_dataset_statistics_columns(monkeypa
         assert int(row["dataset_train_samples"]) == 100
         assert int(row["dataset_valid_samples"]) == 10
         assert int(row["dataset_test_samples"]) == 10
+
+def _legacy_row_kwargs(**overrides):
+    kwargs = {
+        "experiment_id": "exp-legacy-1", "json_filename": "bert_adam_lr1e5_bs8_ep2.json", "seed": 42,
+        "device_type": "CPU", "parallel_workers": 2, "train_dataset_name": "train_task2",
+        "optimizer": "adamw", "learning_rate": 1e-05, "batch_size": 8, "epoch": 2, "exec_time": 12.5,
+        "energy_kwh": 0.002, "emissions_kg": 0.0004, "cost_usd": 0.0003, "avg_ram": 900.5, "peak_ram": 1024.0,
+        "avg_gflops_per_batch": 173.9, "total_gflops": 695.9, "status": "success",
+        "end_iso": "2026-10-22T10:01:00+00:00", "eval_metrics": {"f1_score": 0.9, "precision": 0.8, "recall": 1.0},
+    }
+    return {**kwargs, **overrides}
+
+
+def test_append_csv_row_writes_same_schema_as_append_workflow_csv_rows(monkeypatch, tmp_path):
+    legacy_dir, workflow_dir = tmp_path / "legacy", tmp_path / "workflow"
+    legacy_dir.mkdir()
+    workflow_dir.mkdir()
+    monkeypatch.setattr(persistence, "METRICS_DIR", legacy_dir)
+    legacy_path = persistence.append_csv_row(**_legacy_row_kwargs())
+    monkeypatch.setattr(persistence, "METRICS_DIR", workflow_dir)
+    workflow_path = persistence.append_workflow_csv_rows(
+        _make_workflow_with_attempts([TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED)]),
+        device_type="CPU",
+    )
+
+    def header(path):
+        with open(path, newline="", encoding="utf-8") as file:
+            return next(csv.reader(file))
+
+    assert header(legacy_path) == header(workflow_path)
+    assert legacy_path.name == workflow_path.name
+
+
+def test_append_csv_row_fills_the_shared_columns(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+
+    csv_path = persistence.append_csv_row(**_legacy_row_kwargs(start_iso="2026-10-22T10:00:00+00:00"))
+
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        (row,) = list(csv.DictReader(file))
+    assert row["experiment_run_id"] == "exp-legacy-1"
+    assert row["definition_name"] == "bert_adam_lr1e5_bs8_ep2.json"
+    assert row["workflow_status"] == "success"
+    assert row["task_id"] == "legacy-main-task"
+    assert row["attempt_status"] == "succeeded"
+    assert row["started_at"] == "2026-10-22T10:00:00+00:00"
+    assert row["completed_at"] == "2026-10-22T10:01:00+00:00"
+    assert float(row["task_time_sec"]) == pytest.approx(12.5)
+    assert float(row["avg_ram_mb"]) == pytest.approx(900.5)
+    assert float(row["peak_ram_mb"]) == pytest.approx(1024.0)
+    assert float(row["energy_kwh"]) == pytest.approx(0.002)
+    assert float(row["emissions_kg_co2"]) == pytest.approx(0.0004)
+    assert float(row["cost_usd"]) == pytest.approx(0.0003)
+    assert float(row["total_gflops"]) == pytest.approx(695.9)
+    assert row["parallel_workers"] == "2"
+    assert row["grid_optimizer"] == "adamw"
+    assert float(row["grid_learning_rate"]) == pytest.approx(1e-05)
+    assert row["grid_batch_size"] == "8"
+    assert row["grid_num_epochs"] == "2"
+    assert row["grid_seed"] == "42"
+
+
+def test_append_csv_row_marks_failed_experiment(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+
+    csv_path = persistence.append_csv_row(**_legacy_row_kwargs(status="failed", eval_metrics={}))
+
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        (row,) = list(csv.DictReader(file))
+    assert row["workflow_status"] == "failed"
+    assert row["attempt_status"] == "failed"
+
+
+def test_legacy_result_context_only_uses_columns_the_summary_has(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    result = {
+        "experiment": {"seed": 7},
+        "execution": {"parallel_workers": 1, "train_dataset": "x"},
+        "hyperparameters": {"optimizer": "adam", "epoch": 3, "avg_gflops_per_batch": 1.0},
+    }
+
+    context = persistence.legacy_result_context(result)
+    with caplog.at_level("WARNING", logger=persistence.logger.name):
+        persistence.append_workflow_csv_rows(
+            _make_workflow_with_attempts([TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED)]),
+            device_type="CPU", context=context,
+        )
+
+    hardware = context.pop("cpu_count"), context.pop("gpu_count"), context.pop("gpu_model")
+    context.pop("disk_total_gb"), context.pop("disk_free_gb") # pyright: ignore[reportUnusedExpression]
+    assert hardware[0] >= 1
+    assert context == {
+        "parallel_workers": 1,
+        "grid_params": {"optimizer": "adam", "num_epochs": 3, "seed": 7},
+    }
+    assert "sem coluna" not in caplog.text
+
+
+def test_summary_csv_records_hardware_columns_from_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED)])
+
+    csv_path = persistence.append_workflow_csv_rows(
+        workflow, device_type="CPU",
+        context={
+            "cpu_count": 16, "gpu_count": 1, "gpu_model": "NVIDIA GeForce RTX 2050",
+            "disk_total_gb": 252.11, "disk_free_gb": 216.82,
+        },
+    )
+
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        (row,) = list(csv.DictReader(file))
+    assert row["cpu_count"] == "16" and row["gpu_count"] == "1"
+    assert row["gpu_model"] == "NVIDIA GeForce RTX 2050"
+    assert float(row["disk_total_gb"]) == pytest.approx(252.11)
+    assert float(row["disk_free_gb"]) == pytest.approx(216.82)
+    assert "disk_count" not in row
+
+
+def test_summary_csv_uses_a_separate_file_when_the_existing_header_differs(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED)])
+    first = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+    old_header = "experiment_run_id,task_id,gpu_count\r\n"
+    first.write_bytes((old_header + "run-old,train,1\r\n").encode("utf-8"))
+
+    second = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+    third = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+
+    assert second != first and second.name.startswith(first.stem + "_schema-")
+    assert third == second
+    assert first.read_bytes() == (old_header + "run-old,train,1\r\n").encode("utf-8")  # arquivo antigo intacto
+    with open(second, newline="", encoding="utf-8") as file:
+        assert len(list(csv.DictReader(file))) == 2
+
+
+def test_summary_csv_keeps_appending_to_the_same_file_when_the_header_matches(monkeypatch, tmp_path):
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    workflow = _make_workflow_with_attempts([TaskExecutionAttempt("a1", 1, TaskStatus.SUCCEEDED)])
+
+    first = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+    second = persistence.append_workflow_csv_rows(workflow, device_type="CPU")
+
+    assert first == second
+    assert len(list(tmp_path.glob("experiment_summary_*.csv"))) == 1

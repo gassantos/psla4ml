@@ -205,3 +205,151 @@ def test_cuda_probe_is_cached_and_prewarmed_outside_measure(monkeypatch):
     telemetry.measure(dict)
     telemetry.measure(dict)
     assert calls["count"] == 1
+
+class _FakeEmissionsTracker(_Tracker):
+    created: list = []
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        type(self).created.append(kwargs)
+
+
+def _measure_with_default_tracker(monkeypatch, tmp_path, **collector_kwargs):
+    _FakeEmissionsTracker.created = []
+    monkeypatch.setattr(telemetry_module, "EmissionsTracker", _FakeEmissionsTracker)
+    collector = TaskTelemetryCollector(
+        enable_emissions=True, emissions_output_dir=tmp_path, prewarm_cuda_probe=False,
+        **collector_kwargs,
+    )
+    collector.measure(dict, task_id="train", attempt_id="a1", experiment_run_id="r1")
+    return _FakeEmissionsTracker.created
+
+
+def test_default_tracker_isolates_energy_by_process(monkeypatch, tmp_path):
+    (kwargs,) = _measure_with_default_tracker(monkeypatch, tmp_path)
+
+    assert kwargs["tracking_mode"] == "process"
+    # A linha vai ao CSV consolidado, não a um arquivo por tentativa.
+    assert kwargs["save_to_file"] is False
+    assert "output_file" not in kwargs
+    assert kwargs["experiment_id"] == "r1"
+
+
+class _RowTracker(_Tracker):
+    def __init__(self, experiment_id="tracker-experiment"):
+        super().__init__()
+        self.final_emissions_data = type(
+            "Data", (), {
+                "energy_consumed": 0.25,
+                "values": {
+                    "timestamp": "t", "project_name": "workflow-train", "run_id": "tracker-run",
+                    "experiment_id": experiment_id, "energy_consumed": 0.25, "tracking_mode": "process",
+                },
+            },
+        )()
+
+
+def _read_emissions_rows(directory):
+    import csv
+
+    rows = []
+    for path in sorted(directory.glob("emissions_*.csv")):
+        with open(path, newline="", encoding="utf-8") as file:
+            rows.extend(csv.DictReader(file))
+    return rows
+
+
+def test_emissions_row_carries_summary_keys(tmp_path):
+    collector = TaskTelemetryCollector(
+        enable_emissions=True, emissions_output_dir=tmp_path,
+        tracker_factory=lambda: _RowTracker(), prewarm_cuda_probe=False,
+    )
+    collector.measure(dict, task_id="train", attempt_id="a1", experiment_run_id="r1", experiment_name="def")
+    collector.measure(dict, task_id="train", attempt_id="a2", experiment_run_id="r1", experiment_name="def")
+
+    rows = _read_emissions_rows(tmp_path)
+    assert [(r["experiment_id"], r["run_id"], r["experiment_name"]) for r in rows] == [
+        ("r1", "a1", "def"), ("r1", "a2", "def"),
+    ]
+    assert rows[0]["tracking_mode"] == "process"
+    assert list(rows[0])[:5] == ["timestamp", "project_name", "run_id", "experiment_id", "experiment_name"]
+    assert not list(tmp_path.glob("emissions_train_*.csv"))
+
+
+def test_emissions_row_keys_match_experiment_summary(tmp_path, isolated_metrics_dir):
+    collector = TaskTelemetryCollector(
+        enable_emissions=True, emissions_output_dir=tmp_path,
+        tracker_factory=lambda: _RowTracker(), prewarm_cuda_probe=False,
+    )
+    definition = ExperimentDefinition("workflow-x", (TaskDefinition("train", "Treinar"),))
+    run = SequentialWorkflowExecutor({"train": dict}, telemetry=collector).execute(definition)
+
+    (row,) = _read_emissions_rows(tmp_path)
+    assert row["experiment_id"] == run.experiment_run_id
+    assert row["run_id"] == run.tasks[0].attempts[0].attempt_id
+    assert row["experiment_name"] == run.definition_name == "workflow-x"
+
+
+def test_emissions_header_change_goes_to_schema_file(tmp_path):
+    from experiment.persistence import append_emissions_row
+
+    first = append_emissions_row({"experiment_id": "a", "energy_consumed": 1}, output_dir=tmp_path)
+    second = append_emissions_row({"experiment_id": "b", "energy_consumed": 2, "gpu_count": 1}, output_dir=tmp_path)
+    again = append_emissions_row({"experiment_id": "c", "energy_consumed": 3}, output_dir=tmp_path)
+
+    assert second != first and "_schema-" in second.name
+    assert again == first
+    assert len(_read_emissions_rows(tmp_path)) == 3
+
+
+def test_concurrent_emissions_writers_lose_no_rows(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from experiment.persistence import append_emissions_row
+
+    def _write(index):
+        append_emissions_row({"experiment_id": f"a{index}", "energy_consumed": index}, output_dir=tmp_path)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(_write, range(40)))
+
+    rows = _read_emissions_rows(tmp_path)
+    assert sorted(row["experiment_id"] for row in rows) == sorted(f"a{i}" for i in range(40))
+
+
+def test_emissions_write_failure_does_not_lose_measured_energy(monkeypatch, tmp_path):
+    def _boom(*args, **kwargs):
+        raise OSError("disco cheio")
+
+    monkeypatch.setattr(telemetry_module, "append_emissions_row", _boom)
+    collector = TaskTelemetryCollector(
+        enable_emissions=True, emissions_output_dir=tmp_path,
+        tracker_factory=lambda: _RowTracker(), prewarm_cuda_probe=False,
+    )
+
+    _, metrics, error = collector.measure(dict, task_id="train", attempt_id="a1")
+
+    assert error is None
+    assert metrics["energy_kwh"] == 0.25
+
+
+def test_tracker_without_row_does_not_create_emissions_csv(tmp_path):
+    collector = TaskTelemetryCollector(
+        enable_emissions=True, emissions_output_dir=tmp_path,
+        tracker_factory=lambda: _Tracker(), prewarm_cuda_probe=False,
+    )
+    collector.measure(dict, task_id="train", attempt_id="a1")
+
+    assert not list(tmp_path.glob("emissions_*.csv"))
+
+
+
+def test_tracking_mode_machine_can_be_selected(monkeypatch, tmp_path):
+    (kwargs,) = _measure_with_default_tracker(monkeypatch, tmp_path, tracking_mode="machine")
+
+    assert kwargs["tracking_mode"] == "machine"
+
+
+def test_tracking_mode_rejects_unknown_value():
+    with pytest.raises(ValueError, match="tracking_mode"):
+        TaskTelemetryCollector(enable_emissions=False, tracking_mode="gpu")
