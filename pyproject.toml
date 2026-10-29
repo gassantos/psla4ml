@@ -5,7 +5,7 @@ description =   "PSLA4ML combina hiperparâmetros em Pipelines ML conforme SLA"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "codecarbon>=3.2.2",
+    "codecarbon==3.3.2",
     "configparser>=7.2.0",
     "datasets>=4.5.0",
     "filelock>=3.20.0",
@@ -17,7 +17,6 @@ dependencies = [
     "torchvision>=0.24,<0.25",
     "tqdm>=4.67.1",
     "transformers[torch]>=5.2.0",
-
 ]
 
 [project.optional-dependencies]
