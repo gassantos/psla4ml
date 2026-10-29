@@ -10,7 +10,7 @@ Coberturas:
   - Todos os valores de optimizer são strings reconhecidas por init_optimizer
   - BL-05: max_seq_length e num_epochs presentes em todos os grids
   - BL-05: param_mapping.json contém os novos mapeamentos
-  - BL-05: grid_search_quality.json com 9 combinações de hiperparâmetros (18 com ambientes)
+  - BL-05: grid_search_quality.json com 144 combinações de hiperparâmetros
   - BL-05: _estimate_train_time_sec escala com num_epochs e max_seq_length
 """
 import json
@@ -210,7 +210,7 @@ class TestGridSearchTestBL05:
 
 
 # ---------------------------------------------------------------------------
-# BL-05 — grid_search_quality.json: 9 combinações exatas
+# BL-05 — grid_search_quality.json: 144 combinações exatas
 # ---------------------------------------------------------------------------
 
 class TestGridSearchQualityBL05:
@@ -230,27 +230,27 @@ class TestGridSearchQualityBL05:
 
     def test_num_epochs_three_values(self, quality_cfg):
         values = quality_cfg["hyperparameters"]["num_epochs"]
-        assert set(values) == {2, 3, 5}
+        assert set(values) == {3, 5, 7}
 
-    def test_fixed_resource_params(self, quality_cfg):
+    def test_resource_params_expanded(self, quality_cfg):
         hp = quality_cfg["hyperparameters"]
-        assert len(hp["learning_rate"]) == 1
-        assert len(hp["batch_size"]) == 1
-        assert len(hp["optimizer"]) == 1
-        assert len(hp["dropout"]) == 1
+        assert len(hp["learning_rate"]) == 2
+        assert len(hp["batch_size"]) == 2
+        assert len(hp["optimizer"]) == 2
+        assert len(hp["dropout"]) == 2
         assert len(hp["seed"]) == 1
 
-    def test_hyperparameters_only_nine_combinations(self, quality_cfg):
-        """BL-W2: sem a dimensao environment, o espaco de hiperparametros permanece com 9 combinacoes."""
+    def test_hyperparameters_only_144_combinations(self, quality_cfg):
+        """Sem a dimensão environment, o espaço de hiperparâmetros possui 144 combinações."""
         from gridsearch import generate_parameter_grid
         combos = generate_parameter_grid(quality_cfg["hyperparameters"])
-        assert len(combos) == 9, f"Esperado 9 combinações de hiperparâmetros, obtido {len(combos)}"
+        assert len(combos) == 144, f"Esperado 144 combinações de hiperparâmetros, obtido {len(combos)}"
 
-    def test_exactly_nine_combinations(self, quality_cfg):
-        """Sem bloco environments, a config completa gera 9 combinações."""
+    def test_exactly_144_combinations(self, quality_cfg):
+        """Sem bloco environments, a config completa gera 144 combinações."""
         from gridsearch import generate_parameter_grid
         combos = generate_parameter_grid(quality_cfg)
-        assert len(combos) == 9, f"Esperado 9 combinações, obtido {len(combos)}"
+        assert len(combos) == 144, f"Esperado 144 combinações, obtido {len(combos)}"
 
     def test_meta_count_matches_actual(self, quality_cfg):
         from gridsearch import generate_parameter_grid
