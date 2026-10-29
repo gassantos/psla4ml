@@ -90,8 +90,8 @@ gridsearch/
 ├── config/
 │   ├── grid_search.json          # Grid completo (4.860 exp)
 │   ├── grid_search_test.json     # Grid de teste (8 exp)
-│   ├── grid_search_minimal.json  # Grid minimal (3 exp)
-│   ├── grid_search_quality.json  # Grid reduzido focado em qualidade preditiva
+│   ├── grid_search_minimal.json  # Grid minimal (6 exp)
+│   ├── grid_search_quality.json  # Grid de qualidade + recursos (144 combinações)
 │   ├── grid_search_multienv.json # Grid multi-ambiente (9.720 exp)
 │   └── sla_profiles.json         # Perfis de SLA (6 perfis × 5 ambientes)
 └── docs/

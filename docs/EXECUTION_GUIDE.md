@@ -276,9 +276,9 @@ uv run python -m main --mode grid \
     --parallel 2
 ```
 
-Essa grade fixa os parâmetros de recursos e varia `max_seq_length` e `num_epochs`, totalizando $3 \times 3 = 9$ configurações.
+Essa grade combina parâmetros de recursos e qualidade (`learning_rate`, `batch_size`, `optimizer`, `dropout`, `max_seq_length` e `num_epochs`), totalizando 144 configurações antes dos filtros de SLA.
 
-**Critérios de aprovação:** nove combinações planejadas antes de filtros; resultados contêm F1 e acurácia quando a avaliação as produz; diferenças entre comprimentos de sequência e épocas ficam rastreáveis em `grid_params` ou `hyperparameters`.
+**Critérios de aprovação:** 144 combinações planejadas antes de filtros; resultados contêm F1 e acurácia quando a avaliação as produz; diferenças entre comprimentos de sequência, épocas e parâmetros de recursos ficam rastreáveis em `grid_params` ou `hyperparameters`.
 
 ### 7.4 Grade completa
 
