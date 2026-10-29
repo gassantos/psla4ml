@@ -18,6 +18,7 @@ class _BenchmarkTracker:
             (),
             {
                 "energy_consumed": 0.25,
+                "water_consumed": 1.25,
                 "values": {
                     "timestamp": "2026-10-25T10:00:00",
                     "project_name": "workflow-train",
@@ -26,6 +27,7 @@ class _BenchmarkTracker:
                     "duration": 0.0,
                     "emissions": 0.05,
                     "energy_consumed": 0.25,
+                    "water_consumed": 1.25,
                     "tracking_mode": "process",
                 },
             },
@@ -70,6 +72,7 @@ def test_benchmark_matches_keys_and_energy_between_csvs(monkeypatch, tmp_path):
     assert summary_row["definition_name"] == emissions_row["experiment_name"]
     assert float(summary_row["energy_kwh"]) == pytest.approx(float(emissions_row["energy_consumed"]))
     assert float(summary_row["emissions_kg_co2"]) == pytest.approx(float(emissions_row["emissions"]))
+    assert float(summary_row["water_litter"]) == pytest.approx(float(emissions_row["water_consumed"]))
 
 
 def test_benchmark_has_one_emissions_row_per_summary_attempt(monkeypatch, tmp_path):

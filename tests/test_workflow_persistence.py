@@ -480,7 +480,8 @@ def _legacy_row_kwargs(**overrides):
         "experiment_id": "exp-legacy-1", "json_filename": "bert_adam_lr1e5_bs8_ep2.json", "seed": 42,
         "device_type": "CPU", "parallel_workers": 2, "train_dataset_name": "train_task2",
         "optimizer": "adamw", "learning_rate": 1e-05, "batch_size": 8, "epoch": 2, "exec_time": 12.5,
-        "energy_kwh": 0.002, "emissions_kg": 0.0004, "cost_usd": 0.0003, "avg_ram": 900.5, "peak_ram": 1024.0,
+        "energy_kwh": 0.002, "emissions_kg": 0.0004, "water_litter": 0.6,
+        "cost_usd": 0.0003, "avg_ram": 900.5, "peak_ram": 1024.0,
         "avg_gflops_per_batch": 173.9, "total_gflops": 695.9, "status": "success",
         "end_iso": "2026-10-22T10:01:00+00:00", "eval_metrics": {"f1_score": 0.9, "precision": 0.8, "recall": 1.0},
     }
@@ -526,6 +527,7 @@ def test_append_csv_row_fills_the_shared_columns(monkeypatch, tmp_path):
     assert float(row["peak_ram_mb"]) == pytest.approx(1024.0)
     assert float(row["energy_kwh"]) == pytest.approx(0.002)
     assert float(row["emissions_kg_co2"]) == pytest.approx(0.0004)
+    assert float(row["water_litter"]) == pytest.approx(0.6)
     assert float(row["cost_usd"]) == pytest.approx(0.0003)
     assert float(row["total_gflops"]) == pytest.approx(695.9)
     assert row["parallel_workers"] == "2"

@@ -14,7 +14,9 @@ class _Tracker:
     def __init__(self):
         self.started = False
         self.stopped = False
-        self.final_emissions_data = type("Data", (), {"energy_consumed": 0.25})()
+        self.final_emissions_data = type(
+            "Data", (), {"energy_consumed": 0.25, "water_consumed": 1.5}
+        )()
 
     def start(self):
         self.started = True
@@ -61,6 +63,7 @@ def test_telemetry_records_standard_resources_and_task_provided_flops():
     assert resources["peak_ram_mb"] is not None
     assert resources["energy_kwh"] == 0.25
     assert resources["emissions_kg_co2"] == 0.05
+    assert resources["water_litter"] == 1.5
     assert resources["cost_usd"] == pytest.approx(resources["task_time_sec"] / 1000)
     assert resources["total_gflops"] == 12.5
 
@@ -117,6 +120,7 @@ def test_telemetry_without_emissions_keeps_energy_fields_as_none():
 
     assert resources["energy_kwh"] is None
     assert resources["emissions_kg_co2"] is None
+    assert resources["water_litter"] is None
     assert resources["cost_usd"] is None
 
 
@@ -131,6 +135,7 @@ def test_telemetry_tolerates_tracker_start_failure():
     assert attempt.status is TaskStatus.SUCCEEDED
     assert resources["energy_kwh"] is None
     assert resources["emissions_kg_co2"] is None
+    assert resources["water_litter"] is None
     assert resources["cost_usd"] is None
 
 
