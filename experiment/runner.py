@@ -165,6 +165,10 @@ def execute_experiment(
     start_iso = now_iso()
     DATE_EXEC = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
 
+    # Water Usage Efficiency (WUE) references:
+    #  - https://introl.com/pt/blog/water-usage-efficiency-wue-ai-data-center-cooling-guide-2025
+    #  - https://claritytreinamentos.com.br/wue-efetividade-no-uso-da-agua/
+
     # -------- ENERGY TRACKER --------
     tracker = None
     if (
@@ -176,9 +180,11 @@ def execute_experiment(
         from .helpers import METRICS_DIR
         tracker = EmissionsTracker(
             project_name=exp["name"],
+            measure_power_secs=3,
             output_dir=METRICS_DIR.as_posix(),
             log_level="error",
-            output_file=f"EmissionsCO2_{device_type}_{datetime.now().astimezone().strftime('%Y%m%d')}.csv"
+            output_file=f"EmissionsCO2_{device_type}_{datetime.now().astimezone().strftime('%Y%m%d')}.csv",
+            wue=0.50,
         )
         tracker.start()
 
@@ -264,17 +270,53 @@ def execute_experiment(
     emissions_kg = None
     energy_kwh = None
     water_litter = None
+    energy_source = "unavailable"
+    water_source = "unavailable"
 
     if tracker:
         emissions_kg = tracker.stop()
         try:
-            if hasattr(tracker, 'final_emissions_data') and tracker.final_emissions_data is not None:
-                energy_kwh = tracker.final_emissions_data.energy_consumed
-            elif hasattr(tracker, '_total_energy') and tracker._total_energy is not None:
-                energy_kwh = tracker._total_energy.kWh
-            water_litter = tracker.final_emissions_data.water_consumed
+            final_data = getattr(tracker, "final_emissions_data", None)
+            energy_kwh = getattr(final_data, "energy_consumed", None)
+            water_litter = getattr(final_data, "water_consumed", None)
+            if energy_kwh is not None:
+                energy_source = "final_emissions_data.energy_consumed"
+            if water_litter is not None:
+                water_source = "final_emissions_data.water_consumed"
+            if energy_kwh is None:
+                total_energy = getattr(tracker, "_total_energy", None)
+                energy_kwh = getattr(total_energy, "kWh", None)
+                if energy_kwh is not None:
+                    energy_source = "_total_energy.kWh"
+            if water_litter is None:
+                total_water = getattr(tracker, "_total_water", None)
+                water_litter = getattr(total_water, "litres", None)
+                if water_litter is not None:
+                    water_source = "_total_water.litres"
         except Exception as e:  # noqa: BLE001
-            logger.warning("Não foi possível obter energy_kwh do tracker: %s", e)
+            logger.warning("Não foi possível obter métricas de energia/água do tracker: %s", e)
+        logger.info(
+            "Diagnóstico CodeCarbon | monitoring=%s | tracker=%s | energy_kwh=%s (%s) | water_litter=%s (%s)",
+            mon.get("enable_monitoring"),
+            type(tracker).__name__,
+            energy_kwh,
+            energy_source,
+            water_litter,
+            water_source,
+        )
+        try:
+            water_value = float(water_litter) if water_litter is not None else None
+            energy_value = float(energy_kwh) if energy_kwh is not None else None
+            if water_value in (None, 0.0):
+                logger.warning(
+                    "Consumo hídrico não disponível ou zerado para esta execução. "
+                    "Fonte água: %s | Fonte energia: %s | energy_kwh=%s",
+                    water_source,
+                    energy_source,
+                    energy_value,
+                )
+        except (TypeError, ValueError):
+            logger.warning("Valor de consumo hídrico inválido recebido do tracker: %r", water_litter)
 
     if torch.cuda.is_available():
         torch.cuda.synchronize()

@@ -147,6 +147,12 @@ class TaskTelemetryCollector:
             data = getattr(tracker, "final_emissions_data", None)
             energy = getattr(data, "energy_consumed", None)
             water = getattr(data, "water_consumed", None)
+            if energy is None:
+                total_energy = getattr(tracker, "_total_energy", None)
+                energy = getattr(total_energy, "kWh", None)
+            if water is None:
+                total_water = getattr(tracker, "_total_water", None)
+                water = getattr(total_water, "litres", None)
             return _numeric(energy), _numeric(emissions), _numeric(water)
         except Exception:  # noqa: BLE001
             return None, None, None
