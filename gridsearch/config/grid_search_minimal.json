@@ -26,13 +26,13 @@
   
   "hyperparameters": {
     "learning_rate": [1e-5],
-    "batch_size": [8],
+    "batch_size": [8, 16],
     "optimizer": ["adam", "adamw", "bert_adam"]
   },
 
 
   "notes": [
-    "Configuração MÍNIMA para teste de pipeline: 1 × 1 × 3 (otimizadores) = 3 experimentos",
+    "Configuração MÍNIMA para teste de pipeline: 1 × 2 × 3 (otimizadores) = 6 experimentos",
     "Tempo estimado: ~30 minutos por experimento (depende do dataset)",
     "Memória estimada: ~4.5 GB",
     "Objetivo: Verificar que todo o fluxo funciona antes de rodar grids maiores"

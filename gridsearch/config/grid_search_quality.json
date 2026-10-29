@@ -1,10 +1,10 @@
 {
   "_meta": {
     "version": "1.0.0",
-    "description": "Grid focado em qualidade preditiva — explora max_seq_length × num_epochs com configuração de recursos ótima fixada (BL-05 / Seção 5 do artigo PSLA4ML)",
+    "description": "Grid ampliado para qualidade preditiva e sensibilidade de recursos (BL-05 / Seção 5 do artigo PSLA4ML)",
     "author": "Gustavo Alexandre",
     "date": "2026-07-14",
-    "rationale": "O artigo PSLA4ML identificou como limitação a redução intencional do espaço de hiperparâmetros (max_seq_length e num_epochs fixos). Esta grade resolve essa lacuna fixando os parâmetros de recursos na configuração dominante (BertAdam, lr=1e-5, bs=8, dropout=0.1) e variando apenas as dimensões de qualidade preditiva.",
+    "rationale": "O artigo PSLA4ML identificou como limitação a redução intencional do espaço de hiperparâmetros. Esta grade amplia a cobertura experimental ao variar dimensões de qualidade preditiva (max_seq_length, num_epochs) e dimensões de recursos (learning_rate, batch_size, optimizer, dropout), preservando seed fixa para comparabilidade.",
     "reference_section": "Seção 5 — Conclusões e Trabalhos Futuros: 'Para conclusões sobre qualidade preditiva, é necessária uma exploração mais ampla, incluindo variações de max_seq_length, taxa de aprendizado e número de épocas.'",
     "per_experiment_train_time_sec": 450,
     "time_estimation": {
@@ -32,34 +32,34 @@
       "note_seq_scaling": "Atenção BERT é O(n²): 128 tokens ≈ 0.25× baseline, 256 tokens = baseline, 512 tokens ≈ 4× baseline"
     },
     "total_combinations": {
-      "hyperparameters_only": 9,
-      "with_environments": 9,
-      "formula": "3 (max_seq_length) × 3 (num_epochs) = 9",
-      "note": "Grade focada unicamente em hiperparâmetros de qualidade preditiva"
+      "hyperparameters_only": 144,
+      "with_environments": 144,
+      "formula": "2 (learning_rate) × 2 (batch_size) × 2 (optimizer) × 2 (dropout) × 1 (seed) × 3 (max_seq_length) × 3 (num_epochs) = 144",
+      "note": "Grade combina dimensões de qualidade preditiva e parâmetros de recursos"
     }
   },
 
-  "description": "Grid Search de Qualidade Preditiva — 9 combinações (max_seq_length × num_epochs)",
+  "description": "Grid Search de Qualidade Preditiva e Recursos — 144 combinações",
   "experiment_base": "config/experiments/BertPLI.config",
   "output_dir": "output/experiments/grid_search",
   "parallel_workers": 2,
 
   "hyperparameters": {
-    "_comment": "Parâmetros de recursos fixados na configuração dominante do artigo; apenas max_seq_length e num_epochs variam",
-    "learning_rate":  [1e-5],
-    "batch_size":     [8],
-    "optimizer":      ["bert_adam"],
-    "dropout":        [0.1],
+    "_comment": "Grade ampliada: variação conjunta de recursos e qualidade preditiva",
+    "learning_rate":  [1e-5, 3e-5],
+    "batch_size":     [8, 16],
+    "optimizer":      ["bert_adam", "adamw"],
+    "dropout":        [0.1, 0.3],
     "seed":           [42],
     "max_seq_length": [128, 256, 512],
-    "num_epochs":     [2, 3, 5]
+    "num_epochs":     [3, 5, 7]
   },
 
 
   "notes": [
-    "Grade de qualidade (BL-05): 3 × 3 = 9 experimentos — viável em CPU/GPU local",
+    "Grade de qualidade ampliada (BL-05): 144 experimentos antes de filtros de SLA",
     "Objetivo: verificar se max_seq_length=512 e num_epochs=5 superam a acurácia de 0.5 do artigo",
-    "Tempo estimado (GPU): ~9 × 2min = ~18min; (CPU): ~9 × 90min = ~13.5h com parallel=2",
+    "Tempo estimado depende da combinação; use skyband/SLA para selecionar trade-offs custo×qualidade",
     "Após execução, rode '--skyband-only --skyband-metrics train_time_sec cost_usd' para comparar tiers de qualidade",
     "Combine com filter_by_template(architecture='BertPLI', dataset_id='collie', fixed_hyperparams={'dropout': 0.1}) para isolar o template do artigo"
   ],

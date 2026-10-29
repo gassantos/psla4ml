@@ -32,8 +32,8 @@
   "parallel_workers": 2,
 
   "hyperparameters": {
-    "_comment": "BL-05: max_seq_length e num_epochs com valores únicos (learning_rate reduzido a 1 valor para manter o total baixo)",
-    "learning_rate":  [1e-5],
+    "_comment": "BL-05: max_seq_length e num_epochs com valores únicos (learning_rate agora com 2 valores para testar variação)",
+    "learning_rate":  [1e-5, 3e-5],
     "batch_size":     [8, 16],
     "optimizer":      ["adamw", "bert_adam"],
     "dropout":        [0.1],
@@ -43,7 +43,7 @@
 
 
   "notes": [
-    "Configuração de teste: 1 (lr) × 2 (bs) × 2 (opt) × 1 × 1 × 1 = 4 experimentos",
+    "Configuração de teste: 2 (lr) × 2 (bs) × 2 (opt) × 1 × 1 × 1 = 8 experimentos",
     "Inclui max_seq_length e num_epochs (BL-05) com valores mínimos para validar o pipeline",
     "Ideal para validação rápida antes de executar grids maiores",
     "Memória estimada: ~7-10 GB com parallel=2"
