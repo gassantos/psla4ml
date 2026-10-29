@@ -108,6 +108,7 @@ def build_result_dict(
     eval_metrics: dict[str, Any],
     stdout: str,
     stderr: str,
+    water_litter: float | None = None,
     tpu_check: Any = None,
     xla_world_size: int = 1,
     failure_stage: str | None = None,
@@ -145,6 +146,7 @@ def build_result_dict(
             "energy_kwh": energy_kwh,
             "emissions_kg_co2": emissions_kg,
             "cost_usd": cost_usd,
+            "water_litter": water_litter,
             "avg_ram_mb": avg_ram,
             "peak_ram_mb": peak_ram,
             "total_gflops": total_gflops,
@@ -223,7 +225,7 @@ def append_workflow_csv_rows(
         "task_id", "task_name", "task_type", "activity", "regime", "task_status",
         "attempt_id", "attempt_number", "attempt_status", "started_at", "completed_at",
         "task_time_sec", "avg_ram_mb", "peak_ram_mb", "vram_mb", "peak_vram_mb",
-        "energy_kwh", "emissions_kg_co2", "cost_usd",
+        "energy_kwh", "emissions_kg_co2", "cost_usd", "water_litter",
         "dataset_size_mb", "dataset_tokens_per_document", "dataset_document_count",
         "dataset_chunk_count", "dataset_train_samples", "dataset_valid_samples",
         "dataset_test_samples",
@@ -271,6 +273,7 @@ def append_workflow_csv_rows(
                     "peak_vram_mb": resources.get("peak_vram_mb"),
                     "energy_kwh": resources.get("energy_kwh"),
                     "emissions_kg_co2": resources.get("emissions_kg_co2"),
+                    "water_litter": resources.get("water_litter"),
                     "cost_usd": resources.get("cost_usd"),
                     "dataset_size_mb": dataset_summary.get("dataset_size_mb"),
                     "dataset_tokens_per_document": dataset_summary.get("dataset_tokens_per_document"),
@@ -469,6 +472,7 @@ def append_csv_row(
     end_iso: str,
     eval_metrics: dict[str, Any],
     start_iso: str | None = None,
+    water_litter: float | None = None,
 ) -> Path:
     """Acrescenta ao sumário uma linha no mesmo esquema de ``append_workflow_csv_rows``.
 
@@ -496,6 +500,7 @@ def append_csv_row(
             "train_time_sec": f"{exec_time:.2f}",
             "energy_kwh": energy_kwh,
             "emissions_kg_co2": emissions_kg,
+            "water_litter": water_litter,
             "cost_usd": cost_usd,
             "avg_ram_mb": avg_ram,
             "peak_ram_mb": peak_ram,

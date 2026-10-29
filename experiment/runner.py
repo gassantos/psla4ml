@@ -263,6 +263,7 @@ def execute_experiment(
     # -------- STOP ENERGY TRACKER --------
     emissions_kg = None
     energy_kwh = None
+    water_litter = None
 
     if tracker:
         emissions_kg = tracker.stop()
@@ -271,6 +272,7 @@ def execute_experiment(
                 energy_kwh = tracker.final_emissions_data.energy_consumed
             elif hasattr(tracker, '_total_energy') and tracker._total_energy is not None:
                 energy_kwh = tracker._total_energy.kWh
+            water_litter = tracker.final_emissions_data.water_consumed
         except Exception as e:  # noqa: BLE001
             logger.warning("Não foi possível obter energy_kwh do tracker: %s", e)
 
@@ -364,6 +366,7 @@ def execute_experiment(
         exec_time=exec_time,
         energy_kwh=energy_kwh,
         emissions_kg=emissions_kg,
+        water_litter=water_litter,
         cost_usd=cost_usd,
         avg_ram=avg_ram,
         peak_ram=peak_ram,

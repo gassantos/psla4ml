@@ -88,7 +88,7 @@ class TaskTelemetryCollector:
             stop_sampling.set()
             sampler.join(timeout=2)
 
-        energy_kwh, emissions_kg_co2 = self._stop_tracker(tracker)
+        energy_kwh, emissions_kg_co2, water_litter = self._stop_tracker(tracker)
         emissions_row = _label_emissions_row(
             _emissions_row(tracker), experiment_run_id, attempt_id, experiment_name
         )
@@ -102,6 +102,7 @@ class TaskTelemetryCollector:
             **gpu,
             "energy_kwh": energy_kwh,
             "emissions_kg_co2": emissions_kg_co2,
+            "water_litter": water_litter,
             "cost_usd": compute_cost_usd(
                 energy_kwh, elapsed, self._environment_cost_per_hour_usd
             ),
@@ -138,16 +139,17 @@ class TaskTelemetryCollector:
             return None
 
     @staticmethod
-    def _stop_tracker(tracker: Any | None) -> tuple[float | None, float | None]:
+    def _stop_tracker(tracker: Any | None) -> tuple[float | None, float | None, float | None]:
         if tracker is None:
-            return None, None
+            return None, None, None
         try:
             emissions = tracker.stop()
             data = getattr(tracker, "final_emissions_data", None)
             energy = getattr(data, "energy_consumed", None)
-            return _numeric(energy), _numeric(emissions)
+            water = getattr(data, "water_consumed", None)
+            return _numeric(energy), _numeric(emissions), _numeric(water)
         except Exception:  # noqa: BLE001
-            return None, None
+            return None, None, None
 
 
 def _emissions_row(tracker: Any | None) -> Mapping[str, Any] | None:
