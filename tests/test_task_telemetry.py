@@ -44,6 +44,14 @@ class _BrokenTracker:
         raise RuntimeError("nao deveria ser chamado")
 
 
+class _FallbackDataTracker(_Tracker):
+    def __init__(self):
+        super().__init__()
+        self.final_emissions_data = type("Data", (), {"energy_consumed": None, "water_consumed": None})()
+        self._total_energy = type("Energy", (), {"kWh": 0.125})()
+        self._total_water = type("Water", (), {"litres": 0.75})()
+
+
 def test_telemetry_records_standard_resources_and_task_provided_flops():
     tracker = _Tracker()
     telemetry = TaskTelemetryCollector(
@@ -137,6 +145,18 @@ def test_telemetry_tolerates_tracker_start_failure():
     assert resources["emissions_kg_co2"] is None
     assert resources["water_litter"] is None
     assert resources["cost_usd"] is None
+
+
+def test_telemetry_uses_tracker_fallback_energy_and_water_when_final_data_is_empty():
+    tracker = _FallbackDataTracker()
+    telemetry = TaskTelemetryCollector(enable_emissions=True, tracker_factory=lambda: tracker)
+    definition = ExperimentDefinition("workflow", (TaskDefinition("train", "Treinar"),))
+
+    workflow = SequentialWorkflowExecutor({"train": dict}, telemetry=telemetry).execute(definition)
+    resources = workflow.tasks[0].attempts[0].metrics["resources"]
+
+    assert resources["energy_kwh"] == pytest.approx(0.125)
+    assert resources["water_litter"] == pytest.approx(0.75)
 
 
 def test_metrics_are_isolated_between_tasks():
