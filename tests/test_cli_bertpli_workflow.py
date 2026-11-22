@@ -1,6 +1,7 @@
 """Integracao dos workflows declarativos com o CLI."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +25,7 @@ def prewarm_calls(monkeypatch):
         calls.append({"config": base_config_path, "overrides": dataset_overrides, "strict": strict})
 
     monkeypatch.setattr("cli.commands.prewarm_huggingface", fake_prewarm)
+    monkeypatch.setattr("cli.commands.ensure_gcp_catalog_collection", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("cli.runners.prewarm_huggingface", fake_prewarm)
     monkeypatch.setattr(
         "cli.runners._enable_hf_offline_mode",
@@ -327,3 +329,27 @@ def test_single_workflow_writes_environment_and_hyperparameters_to_the_summary(m
     assert all(row["configured_environment"] for row in rows)
     assert all(row["parallel_workers"] == "1" for row in rows)
     assert all(row["grid_batch_size"] == "16" and row["grid_optimizer"] == "adamw" for row in rows)
+
+
+def test_single_and_grid_trigger_gcp_catalog_collection(monkeypatch):
+    calls = []
+    monkeypatch.setattr("cli.commands.ensure_gcp_catalog_collection", lambda grid_cfg: calls.append(grid_cfg))
+    monkeypatch.setattr("cli.commands.prewarm_huggingface", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("cli.commands.run_grid_search_experiments", lambda **_kwargs: None)
+    monkeypatch.setattr("cli.commands.run_skyband_analysis", lambda **_kwargs: None)
+    monkeypatch.setattr("cli.commands.load_config", lambda _path: _MonitoringConfig())
+    monkeypatch.setattr("cli.commands.get_torch_device", lambda: {"type": "CPU"})
+    monkeypatch.setattr(
+        "experiment.workflow_templates._launch_experiment",
+        lambda **_k: {"experiment": {"status": "success"}, "resources": {}, "evaluation": {}},
+    )
+    monkeypatch.setattr("cli.commands.write_workflow_run", lambda wf: Path("output/experiments/workflow_runs") / wf.experiment_run_id)
+
+    single_args = build_argument_parser().parse_args(["--mode", "single", "--no-skyband"])
+    SingleCommand().execute(single_args, {})
+
+    grid_args = build_argument_parser().parse_args(["--mode", "grid", "--no-skyband"])
+    from cli.commands import GridCommand
+    GridCommand().execute(grid_args, {})
+
+    assert calls == [single_args.grid_config, grid_args.grid_config]

@@ -44,6 +44,7 @@ from utils.device import get_torch_device
 
 from .runners import (
     _build_dataset_overrides,
+    ensure_gcp_catalog_collection,
     prewarm_huggingface,
     run_grid_search_experiments,
     run_skyband_analysis,
@@ -92,6 +93,7 @@ class SingleCommand(Command):
     """Executa um único experimento, opcionalmente seguido de Skyband."""
 
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
+        ensure_gcp_catalog_collection(args.grid_config)
         dataset_overrides = _build_dataset_overrides(args)
         # Cache quente antes de medir, como no grid; evita contar download no tempo/energia.
         prewarm_huggingface(args.config, dataset_overrides, strict=False)
@@ -214,6 +216,7 @@ class GridCommand(Command):
     """Executa grid search, opcionalmente seguido de Skyband."""
 
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
+        ensure_gcp_catalog_collection(args.grid_config)
         run_grid_search_experiments(
             base_config_path=args.config,
             grid_config_path=args.grid_config,

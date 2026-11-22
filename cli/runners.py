@@ -27,6 +27,49 @@ from .constants import DEFAULT_SLA_PROFILES, DEFAULT_TRAIN_DATASET
 logger = logging.getLogger(__name__)
 
 
+def _print_console_safe(text: str = "") -> None:
+    """Imprime texto no console sem quebrar em encodings restritos (ex.: cp1252)."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        stream = sys.stdout
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        safe_text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_text)
+
+
+def ensure_gcp_catalog_collection(grid_config_path: str) -> None:
+    """Dispara coleta de catálogo GCP/Colab sem bloquear execução principal.
+
+    A coleta é melhor-esforço: falhas geram warning e não interrompem single/grid.
+    """
+    from scripts.collect_gcp_catalog import collect_gcp_catalog
+    from utils.device import get_torch_device
+
+    device_type = get_torch_device().get("type", "CPU")
+    if device_type not in {"CPU", "GPU", "TPU"}:
+        device_type = "CPU"
+
+    try:
+        result = collect_gcp_catalog(
+            grid_config=grid_config_path,
+            device_type=device_type,
+            fetch_gcp_api=True,
+            gcloud_fallback=True,
+            strict_no_gcp=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Coleta automática de catálogo GCP/Colab falhou (não bloqueante): %s", exc)
+        return
+
+    if result.get("collected"):
+        logger.info(
+            "Coleta automática de catálogo GCP/Colab concluída: resources=%s communication=%s",
+            result.get("resource_path"),
+            result.get("communication_path"),
+        )
+
+
 def _resolve_model_id_for_prewarm(base_config_path: str) -> str:
     """Resolve o identificador/caminho do backbone BERT definido no config."""
     from experiment.helpers import load_config
@@ -382,14 +425,14 @@ def run_skyband_analysis(
     effective_metrics = metrics or DEFAULT_METRICS
 
     # ── Relatório principal ──────────────────────────────────────────────────
-    print()
+    _print_console_safe()
     report = skyband_report(
         success,
         k=k,
         sla_constraints=sla_constraints or None,
         metrics=effective_metrics,
     )
-    print(report)
+    _print_console_safe(report)
 
     # ── Comparação opcional Skyband vs Ranking Escalar ───────────────────────
     if compare:
