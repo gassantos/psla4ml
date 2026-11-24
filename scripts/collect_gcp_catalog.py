@@ -1054,6 +1054,55 @@ def _collect_gcp_catalog(
         print(f"Detalhe da estimativa: {exc}")
 
 
+def collect_gcp_catalog(
+    *,
+    grid_config: str | None = None,
+    device_type: str = "CPU",
+    fetch_gcp_api: bool = True,
+    gcloud_fallback: bool = True,
+    strict_no_gcp: bool = False,
+) -> dict[str, Any]:
+    """API pública compatível com versões anteriores para coleta de catálogo.
+
+    Mantém contrato usado por cli/runners.py: retorna dicionário com
+    campos de status e caminhos, sem interromper o pipeline principal.
+    """
+    result: dict[str, Any] = {
+        "collected": False,
+        "resource_path": None,
+        "communication_path": None,
+        "device_type": device_type,
+        "grid_config": grid_config,
+        "fetch_gcp_api": fetch_gcp_api,
+        "gcloud_fallback": gcloud_fallback,
+        "strict_no_gcp": strict_no_gcp,
+    }
+
+    if not fetch_gcp_api:
+        return result
+
+    try:
+        cfg = _load_config()
+        machine_name = _machine_type_name(cfg["machine_type"])
+        _collect_gcp_catalog(
+            cfg,
+            limit=5,
+            disk_type="pd-balanced",
+            disk_size_gb=10,
+            is_spot=False,
+            machine_type_name=machine_name,
+            gpu_type=None,
+            gpu_count=0,
+        )
+        result["collected"] = True
+    except Exception as exc:  # noqa: BLE001
+        if strict_no_gcp:
+            raise
+        result["error"] = str(exc)
+
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _build_parser().parse_args(argv)
