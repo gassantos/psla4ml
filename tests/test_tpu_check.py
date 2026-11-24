@@ -425,3 +425,15 @@ def test_effective_tpu_cores_defaults_to_one_on_tpu():
     assert _effective_tpu_cores(argparse.Namespace(tpu_cores=0), "TPU") == 1
     assert _effective_tpu_cores(argparse.Namespace(tpu_cores=8), "TPU") == 8
     assert _effective_tpu_cores(argparse.Namespace(tpu_cores=8), "GPU") == 0
+
+
+def test_tpu_unavailable_error_explains_cause(monkeypatch):
+    import argparse
+    import pytest
+    from cli import commands
+
+    monkeypatch.setattr(commands, "get_torch_device", lambda: {"type": "CPU"})
+    monkeypatch.setattr(commands, "describe_tpu_unavailable", lambda: "torch_xla não pôde ser importado (X)")
+    with pytest.raises(RuntimeError, match=r"--extra tpu.*PJRT_DEVICE|PJRT_DEVICE.*--extra tpu") as exc:
+        commands._ensure_tpu_available(argparse.Namespace(tpu_cores=1))
+    assert "torch_xla não pôde ser importado" in str(exc.value)

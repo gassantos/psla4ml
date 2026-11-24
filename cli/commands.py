@@ -40,7 +40,7 @@ from experiment.workflow_templates import (
     build_launcher_task_functions,
     build_launcher_workflow,
 )
-from utils.device import get_torch_device
+from utils.device import describe_tpu_unavailable, get_torch_device
 
 from .runners import (
     _build_dataset_overrides,
@@ -79,6 +79,22 @@ def _effective_tpu_cores(args: argparse.Namespace, device_type: str) -> int:
     return args.tpu_cores if args.tpu_cores > 0 else 1
 
 
+def _ensure_tpu_available(args: argparse.Namespace) -> None:
+    """Falha com diagnóstico claro se --tpu-cores foi pedido sem runtime TPU/XLA."""
+    if args.tpu_cores <= 0:
+        return
+    if get_torch_device().get("type") == "TPU":
+        return
+    raise RuntimeError(
+        "TPU solicitado via --tpu-cores, mas runtime TPU/XLA não está disponível: "
+        f"{describe_tpu_unavailable()}. "
+        "Execute em runtime TPU (ex.: Colab TPU) com o extra 'tpu' ativo: "
+        "'export PJRT_DEVICE=TPU' e 'uv run --extra tpu python -m main ...' "
+        "(um 'uv run' sem --extra tpu usa o torch CUDA/CPU e não enxerga o torch_xla). "
+        "Para CPU/GPU, use --tpu-cores 0."
+    )
+
+
 class Command(ABC):
     """Interface para comandos de execução (Command Pattern)."""
 
@@ -106,16 +122,7 @@ class SingleCommand(Command):
 
     @staticmethod
     def _ensure_tpu_available_if_requested(args: argparse.Namespace) -> None:
-        if args.tpu_cores <= 0:
-            return
-        device = get_torch_device()
-        if device.get("type") == "TPU":
-            return
-        raise RuntimeError(
-            "TPU solicitado via --tpu-cores, mas runtime TPU/XLA não está disponível. "
-            "Instale/ative torch_xla e execute em ambiente TPU (ex.: Colab TPU), "
-            "ou use --tpu-cores 0 para execução CPU/GPU."
-        )
+        _ensure_tpu_available(args)
 
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
         self._ensure_tpu_available_if_requested(args)
@@ -243,16 +250,7 @@ class GridCommand(Command):
 
     @staticmethod
     def _ensure_tpu_available_if_requested(args: argparse.Namespace) -> None:
-        if args.tpu_cores <= 0:
-            return
-        device = get_torch_device()
-        if device.get("type") == "TPU":
-            return
-        raise RuntimeError(
-            "TPU solicitado via --tpu-cores, mas runtime TPU/XLA não está disponível. "
-            "Instale/ative torch_xla e execute em ambiente TPU (ex.: Colab TPU), "
-            "ou use --tpu-cores 0 para execução CPU/GPU."
-        )
+        _ensure_tpu_available(args)
 
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
         self._ensure_tpu_available_if_requested(args)

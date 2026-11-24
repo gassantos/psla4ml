@@ -214,13 +214,16 @@ Exemplo mínimo:
 
 Use `--gpu ID [ID ...]` para selecionar GPUs. Sem a opção, o runtime detecta o dispositivo. Para TPU PJRT, instale o extra `tpu`, exporte `PJRT_DEVICE=TPU` e use BF16 quando o config original usar FP16.
 
+> `uv run` sem `--extra tpu` resolve o torch CUDA/CPU e não enxerga o `torch_xla`
+> (erro "runtime TPU/XLA não está disponível"). Em TPU, use sempre `uv run --extra tpu`.
+
 ```bash
 export PJRT_DEVICE=TPU
-uv run python -m main --mode single \
+uv run --extra tpu python -m main --mode single \
   --config config/experiments/BertPLI.config \
   --precision bf16 --tpu-cores 8 --no-skyband
 
-uv run python -m scripts.homologate_tpu --expected-cores 8
+uv run --extra tpu python -m scripts.homologate_tpu --expected-cores 8
 ```
 
 Para TPU multicore no grid, use `--parallel 1`; os cores TPU são usados dentro de cada combinação.
