@@ -89,8 +89,9 @@ def _ensure_tpu_available(args: argparse.Namespace) -> None:
         "TPU solicitado via --tpu-cores, mas runtime TPU/XLA não está disponível: "
         f"{describe_tpu_unavailable()}. "
         "Execute em runtime TPU (ex.: Colab TPU) com o extra 'tpu' ativo: "
-        "'export PJRT_DEVICE=TPU' e 'uv run --extra tpu python -m main ...' "
-        "(um 'uv run' sem --extra tpu usa o torch CUDA/CPU e não enxerga o torch_xla). "
+        "'export PJRT_DEVICE=TPU' e 'uv run --python 3.12 --extra tpu python -m main ...' "
+        "(um 'uv run' sem --extra tpu usa o torch CUDA/CPU e não enxerga o torch_xla; "
+        "o libtpu exigido pelo torch_xla 2.9 só tem wheels até Python 3.12). "
         "Para CPU/GPU, use --tpu-cores 0."
     )
 
