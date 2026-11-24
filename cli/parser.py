@@ -207,11 +207,11 @@ Configurações padrão:
     parser.add_argument(
         "--tpu-cores",
         type=int,
-        default=1,
+        default=0,
         metavar="N",
         help=(
-            "Número de cores TPU para execução PJRT (padrão: 1). "
-            "Use 8 no Colab TPU; requer --parallel 1 no modo grid."
+            "Número de cores TPU para execução PJRT (padrão: 0 = desabilitado). "
+            "Use 1 ou 8 no Colab TPU; requer --parallel 1 no modo grid."
         ),
     )
 

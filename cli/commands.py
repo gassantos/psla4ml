@@ -92,7 +92,21 @@ class SkybandOnlyCommand(Command):
 class SingleCommand(Command):
     """Executa um único experimento, opcionalmente seguido de Skyband."""
 
+    @staticmethod
+    def _ensure_tpu_available_if_requested(args: argparse.Namespace) -> None:
+        if args.tpu_cores <= 0:
+            return
+        device = get_torch_device()
+        if device.get("type") == "TPU":
+            return
+        raise RuntimeError(
+            "TPU solicitado via --tpu-cores, mas runtime TPU/XLA não está disponível. "
+            "Instale/ative torch_xla e execute em ambiente TPU (ex.: Colab TPU), "
+            "ou use --tpu-cores 0 para execução CPU/GPU."
+        )
+
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
+        self._ensure_tpu_available_if_requested(args)
         ensure_gcp_catalog_collection(args.grid_config)
         dataset_overrides = _build_dataset_overrides(args)
         # Cache quente antes de medir, como no grid; evita contar download no tempo/energia.
@@ -215,7 +229,21 @@ class SingleCommand(Command):
 class GridCommand(Command):
     """Executa grid search, opcionalmente seguido de Skyband."""
 
+    @staticmethod
+    def _ensure_tpu_available_if_requested(args: argparse.Namespace) -> None:
+        if args.tpu_cores <= 0:
+            return
+        device = get_torch_device()
+        if device.get("type") == "TPU":
+            return
+        raise RuntimeError(
+            "TPU solicitado via --tpu-cores, mas runtime TPU/XLA não está disponível. "
+            "Instale/ative torch_xla e execute em ambiente TPU (ex.: Colab TPU), "
+            "ou use --tpu-cores 0 para execução CPU/GPU."
+        )
+
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
+        self._ensure_tpu_available_if_requested(args)
         ensure_gcp_catalog_collection(args.grid_config)
         run_grid_search_experiments(
             base_config_path=args.config,
