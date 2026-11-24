@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Any
 
 from google.api_core import exceptions as gcp_exceptions
@@ -129,14 +130,83 @@ def _delete_if_exists(client: compute_v1.InstancesClient, cfg: dict[str, str]) -
     print(f"Instância '{cfg['instance']}' excluída com sucesso!")
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Executa operações de ciclo de vida de instância no Google Compute Engine."
+    )
+    parser.add_argument(
+        "--action",
+        choices=["list", "create", "stop", "delete", "cycle"],
+        default="cycle",
+        help="Ação a executar. Padrão: cycle (create -> list -> stop -> delete).",
+    )
+    parser.add_argument(
+        "--safe",
+        action="store_true",
+        help="Modo seguro: exige ação explícita e impede execução do ciclo completo.",
+    )
+    parser.add_argument(
+        "--confirm-delete",
+        action="store_true",
+        help="Confirma a exclusão sem prompt interativo (use apenas em automação controlada).",
+    )
+    return parser
+
+
+def _confirm_delete(cfg: dict[str, str]) -> bool:
+    prompt = (
+        f"Confirma exclusão da instância '{cfg['instance']}' em "
+        f"{cfg['project']}/{cfg['zone']}? [y/N]: "
+    )
     try:
-        cfg = _load_config()
-        client = compute_v1.InstancesClient()
+        answer = input(prompt).strip().lower()
+    except EOFError:
+        return False
+    return answer in {"y", "yes"}
+
+
+def _run_action(
+    client: compute_v1.InstancesClient,
+    cfg: dict[str, str],
+    action: str,
+    *,
+    confirm_delete: bool,
+) -> None:
+    if action == "list":
+        _print_instances(client, cfg)
+        return
+    if action == "create":
+        _create_if_missing(client, cfg)
+        return
+    if action == "stop":
+        _stop_if_exists(client, cfg)
+        return
+    if action == "delete":
+        if not confirm_delete and not _confirm_delete(cfg):
+            print("Exclusão cancelada pelo usuário.")
+            return
+        _delete_if_exists(client, cfg)
+        return
+    if action == "cycle":
         _create_if_missing(client, cfg)
         _print_instances(client, cfg)
         _stop_if_exists(client, cfg)
+        if not confirm_delete and not _confirm_delete(cfg):
+            print("Exclusão cancelada pelo usuário.")
+            return
         _delete_if_exists(client, cfg)
+        return
+    raise RuntimeError(f"Ação inválida: {action}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = _build_parser().parse_args(argv)
+        if args.safe and args.action == "cycle":
+            raise RuntimeError("Modo seguro requer --action explícita (list/create/stop/delete).")
+        cfg = _load_config()
+        client = compute_v1.InstancesClient()
+        _run_action(client, cfg, args.action, confirm_delete=args.confirm_delete)
         return 0
     except (RuntimeError, gcp_exceptions.GoogleAPICallError) as exc:
         print(f"Erro ao executar ciclo de instância GCP: {exc}")
