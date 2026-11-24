@@ -11,4 +11,4 @@ NAT_TYPE = "ONE_TO_ONE_NAT"
 
 # Imagem-padrão para Máquina de Execução
 SRC_IMG = "projects/debian-cloud/global/images/family/debian-12"
-MACHINE_TYPE = "@format zones/{env[zone_name]}/machineTypes/e2-micro"
+MACHINE_TYPE = "@format zones/{env[zone_name]}/machineTypes/{env[machine_type_name]}"

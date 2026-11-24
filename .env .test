@@ -2,3 +2,4 @@ APP_ENV=development
 project_id = "proj-dev"
 zone_name = "zone-dev"
 instance_name = "vm-dev"
+machine_type_name = "e2-micro"

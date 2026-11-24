@@ -41,7 +41,7 @@ GPU_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
 LLM_PROFILES: dict[str, dict[str, Any]] = {
     "none": {},
     "llm-small": {
-        "machine_type": "n1-standard-16",
+        "machine_type": "g2-standard-8",
         "boot_disk_size_gb": 500,
         "boot_disk_type": "pd-ssd",
         "enable_gpu": True,
@@ -49,7 +49,7 @@ LLM_PROFILES: dict[str, dict[str, Any]] = {
         "gpu_count": 1,
     },
     "llm-medium": {
-        "machine_type": "n1-standard-32",
+        "machine_type": "a2-highgpu-1g",
         "boot_disk_size_gb": 1000,
         "boot_disk_type": "pd-ssd",
         "enable_gpu": True,
@@ -57,7 +57,7 @@ LLM_PROFILES: dict[str, dict[str, Any]] = {
         "gpu_count": 1,
     },
     "llm-large": {
-        "machine_type": "n1-standard-64",
+        "machine_type": "a2-highgpu-4g",
         "boot_disk_size_gb": 2000,
         "boot_disk_type": "pd-ssd",
         "enable_gpu": True,
@@ -115,6 +115,67 @@ def _gpu_quota_metric_candidates(gpu_type: str, use_spot: bool) -> list[str]:
     return candidates
 
 
+def _validate_machine_gpu_compatibility(
+    options: ProvisioningOptions,
+    *,
+    strict: bool,
+) -> None:
+    if not options.enable_gpu or not options.gpu_type:
+        return
+
+    machine = options.machine_type.lower().split("/")[-1]
+    model = (_normalize_gpu_model(options.gpu_type) or "").lower()
+
+    rules: list[tuple[bool, str]] = []
+    if model == "l4":
+        rules.append((machine.startswith("g2-"), "L4 requer machine type da família g2-*"))
+    elif model == "a100":
+        rules.append((machine.startswith("a2-"), "A100 requer machine type da família a2-*"))
+    elif model == "h100":
+        rules.append((machine.startswith("a3-"), "H100 requer machine type da família a3-*"))
+
+    for ok, reason in rules:
+        if ok:
+            continue
+        message = (
+            "Combinação inválida de machine type e GPU para provisionamento. "
+            f"Machine type: {options.machine_type}, GPU: {options.gpu_type}. {reason}."
+        )
+        if strict:
+            raise RuntimeError(message)
+        print(f"Aviso (dry-run): {message}")
+
+
+def _resolve_accelerator_name_in_zone(cfg: dict[str, str], gpu_type: str) -> str | None:
+    requested = gpu_type.split("/")[-1]
+    accelerator_client = compute_v1.AcceleratorTypesClient()
+
+    # 1) Nome exato informado.
+    try:
+        accelerator_client.get(
+            project=cfg["project"],
+            zone=cfg["zone"],
+            accelerator_type=requested,
+        )
+        return requested
+    except gcp_exceptions.NotFound:
+        pass
+    except gcp_exceptions.GoogleAPICallError:
+        return None
+
+    # 2) Fallback por modelo (cobre nvidia-l4 vs nvidia-tesla-l4, por exemplo).
+    tokens = _gpu_match_tokens(gpu_type)
+    try:
+        for accelerator in accelerator_client.list(project=cfg["project"], zone=cfg["zone"]):
+            name_upper = accelerator.name.upper()
+            if any(token in name_upper for token in tokens):
+                return accelerator.name
+    except gcp_exceptions.GoogleAPICallError:
+        return None
+
+    return None
+
+
 def _suggest_alternative_zones_for_gpu(
     cfg: dict[str, str],
     *,
@@ -170,7 +231,29 @@ def _precheck_gpu_zone_and_quota(
     if not options.enable_gpu or not options.gpu_type:
         return
 
-    accelerator_name = options.gpu_type.split("/")[-1]
+    requested_name = options.gpu_type.split("/")[-1]
+    accelerator_name = _resolve_accelerator_name_in_zone(cfg, options.gpu_type)
+
+    if accelerator_name and accelerator_name != requested_name:
+        print(
+            "Pre-check GPU: nome de acelerador ajustado automaticamente "
+            f"de '{requested_name}' para '{accelerator_name}' na zona {cfg['zone']}."
+        )
+        options.gpu_type = accelerator_name
+
+    if not accelerator_name:
+        message = f"GPU '{requested_name}' não está disponível na zona {cfg['zone']}."
+        suggestions = _suggest_alternative_zones_for_gpu(
+            cfg,
+            accelerator_name=requested_name,
+            gpu_type=options.gpu_type,
+        )
+        if suggestions:
+            message += " Zonas alternativas sugeridas: " + ", ".join(suggestions) + "."
+        if strict:
+            raise RuntimeError(message)
+        print(f"Aviso (dry-run): {message}")
+        return
 
     accelerator_client = compute_v1.AcceleratorTypesClient()
     try:
@@ -184,18 +267,10 @@ def _precheck_gpu_zone_and_quota(
             f"({accelerator_name} em {cfg['zone']})."
         )
     except gcp_exceptions.NotFound as exc:
-        message = f"GPU '{accelerator_name}' não está disponível na zona {cfg['zone']}."
-        suggestions = _suggest_alternative_zones_for_gpu(
-            cfg,
-            accelerator_name=accelerator_name,
-            gpu_type=options.gpu_type,
+        message = (
+            f"GPU '{accelerator_name}' não está disponível na zona {cfg['zone']} "
+            "(estado inconsistente após resolução)."
         )
-        if suggestions:
-            message += (
-                " Zonas alternativas sugeridas: "
-                + ", ".join(suggestions)
-                + "."
-            )
         if strict:
             raise RuntimeError(message) from exc
         print(f"Aviso (dry-run): {message}")
@@ -369,12 +444,35 @@ def _create_if_missing(
         return
 
     print(f"Iniciando a criação da instância '{cfg['instance']}' com Debian 12...")
-    operation = client.insert(
-        project=cfg["project"],
-        zone=cfg["zone"],
-        instance_resource=_build_instance_payload(cfg, options),
-    )
-    operation.result()
+    try:
+        operation = client.insert(
+            project=cfg["project"],
+            zone=cfg["zone"],
+            instance_resource=_build_instance_payload(cfg, options),
+        )
+        operation.result()
+    except gcp_exceptions.ServiceUnavailable as exc:
+        details = str(exc)
+        if "ZONE_RESOURCE_POOL_EXHAUSTED" in details:
+            message = (
+                "A zona atual não possui capacidade suficiente para criar a VM agora "
+                f"({cfg['zone']})."
+            )
+            if options.enable_gpu and options.gpu_type:
+                accelerator_name = options.gpu_type.split("/")[-1]
+                suggestions = _suggest_alternative_zones_for_gpu(
+                    cfg,
+                    accelerator_name=accelerator_name,
+                    gpu_type=options.gpu_type,
+                )
+                if suggestions:
+                    message += " Tente uma destas zonas alternativas: " + ", ".join(suggestions) + "."
+            message += (
+                " Atualize ZONE_NAME no .env/config e execute novamente "
+                "(ou use dry-run para validar a zona antes)."
+            )
+            raise RuntimeError(message) from exc
+        raise
     print(f"Instância '{cfg['instance']}' criada com sucesso!")
 
 
@@ -542,7 +640,7 @@ def _resolve_provisioning_options(args: argparse.Namespace, cfg: dict[str, str])
     if boot_disk_size_gb < 1:
         raise RuntimeError("--boot-disk-size-gb deve ser maior ou igual a 1.")
 
-    return ProvisioningOptions(
+    options = ProvisioningOptions(
         machine_type=machine_type,
         boot_disk_size_gb=boot_disk_size_gb,
         boot_disk_type=boot_disk_type,
@@ -551,6 +649,8 @@ def _resolve_provisioning_options(args: argparse.Namespace, cfg: dict[str, str])
         gpu_type=gpu_type,
         gpu_count=gpu_count,
     )
+    _validate_machine_gpu_compatibility(options, strict=not bool(args.dry_run))
+    return options
 
 
 def _confirm_delete(cfg: dict[str, str]) -> bool:
