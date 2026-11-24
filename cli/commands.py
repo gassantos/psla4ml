@@ -67,6 +67,18 @@ def _workflow_code_version() -> str:
     return result.stdout.strip() or "unversioned"
 
 
+def _effective_tpu_cores(args: argparse.Namespace, device_type: str) -> int:
+    """Resolve o número de cores TPU efetivo para o workflow.
+
+    Em runtime TPU/XLA (ex.: Colab) sem ``--tpu-cores``, usa 1 core (processo
+    único) em vez de 0, para que o experimento rode no device XLA detectado.
+    Fora de TPU, retorna 0.
+    """
+    if device_type != "TPU":
+        return 0
+    return args.tpu_cores if args.tpu_cores > 0 else 1
+
+
 class Command(ABC):
     """Interface para comandos de execução (Command Pattern)."""
 
@@ -138,7 +150,7 @@ class SingleCommand(Command):
 
         device_type = get_torch_device()["type"]
         gpu_count = len(args.gpu) if args.gpu else (1 if device_type == "GPU" else 0)
-        tpu_cores = args.tpu_cores if device_type == "TPU" else 0
+        tpu_cores = _effective_tpu_cores(args, device_type)
         config = HuggingFaceWorkflowConfig(
             name=f"huggingface-single-{args.train_dataset}",
             dataset_source=args.dataset_source,
@@ -168,7 +180,7 @@ class SingleCommand(Command):
                 gpu_list=args.gpu,
                 train_file=args.train_dataset,
                 environment_overrides={"precision": args.precision} if args.precision else None,
-                tpu_cores=args.tpu_cores,
+                tpu_cores=tpu_cores,
             ),
             cache=cache,
             code_version=_workflow_code_version() if cache else None,
@@ -187,7 +199,7 @@ class SingleCommand(Command):
         """Executa o config local pelo template canônico, com um único worker."""
         device_type = get_torch_device()["type"]
         gpu_count = len(args.gpu) if args.gpu else (1 if device_type == "GPU" else 0)
-        tpu_cores = args.tpu_cores if device_type == "TPU" else 0
+        tpu_cores = _effective_tpu_cores(args, device_type)
         config = LauncherWorkflowConfig(
             name=f"single-{args.train_dataset}",
             config_path=args.config,
@@ -211,7 +223,7 @@ class SingleCommand(Command):
                 config,
                 gpu_list=args.gpu,
                 environment_overrides={"precision": args.precision} if args.precision else None,
-                tpu_cores=args.tpu_cores,
+                tpu_cores=tpu_cores,
             ),
             cache=cache,
             code_version=_workflow_code_version() if cache else None,
