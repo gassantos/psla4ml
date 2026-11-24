@@ -97,6 +97,160 @@ def _print_provisioning_plan(
         print("GPU: desabilitada")
 
 
+def _gpu_type_short_name(gpu_type: str) -> str:
+    short = gpu_type.lower().split("/")[-1]
+    short = short.replace("nvidia-tesla-", "")
+    short = short.replace("nvidia-", "")
+    short = short.replace("tesla-", "")
+    return short.upper().replace("-", "_")
+
+
+def _gpu_quota_metric_candidates(gpu_type: str, use_spot: bool) -> list[str]:
+    model = _gpu_type_short_name(gpu_type)
+    candidates = []
+    if use_spot:
+        candidates.append(f"PREEMPTIBLE_NVIDIA_{model}_GPUS")
+    candidates.append(f"NVIDIA_{model}_GPUS")
+    candidates.append("GPUS_ALL_REGIONS")
+    return candidates
+
+
+def _suggest_alternative_zones_for_gpu(
+    cfg: dict[str, str],
+    *,
+    accelerator_name: str,
+    gpu_type: str,
+    limit: int = 8,
+) -> list[str]:
+    accelerator_client = compute_v1.AcceleratorTypesClient()
+    zones_found: list[str] = []
+    normalized_model = _normalize_gpu_model(gpu_type) or ""
+
+    def _matches(acc_name: str) -> bool:
+        if acc_name == accelerator_name:
+            return True
+        if normalized_model:
+            compact_model = normalized_model.replace("-", "")
+            acc_norm = acc_name.lower().replace("-", "")
+            return compact_model in acc_norm
+        return False
+
+    try:
+        for zone_key, scoped_list in accelerator_client.aggregated_list(project=cfg["project"]):
+            if not scoped_list.accelerator_types:
+                continue
+            zone_name = zone_key.split("/")[-1]
+            for acc in scoped_list.accelerator_types:
+                if _matches(acc.name):
+                    zones_found.append(zone_name)
+                    break
+    except gcp_exceptions.GoogleAPICallError:
+        return []
+
+    if not zones_found:
+        return []
+
+    preferred_region = _zone_to_region(cfg["zone"])
+
+    def _zone_rank(zone: str) -> tuple[int, str]:
+        same_region = 0 if zone.startswith(f"{preferred_region}-") else 1
+        return (same_region, zone)
+
+    ranked = sorted(set(zones_found), key=_zone_rank)
+    ranked = [zone for zone in ranked if zone != cfg["zone"]]
+    return ranked[:limit]
+
+
+def _precheck_gpu_zone_and_quota(
+    cfg: dict[str, str],
+    options: ProvisioningOptions,
+    *,
+    strict: bool,
+) -> None:
+    if not options.enable_gpu or not options.gpu_type:
+        return
+
+    accelerator_name = options.gpu_type.split("/")[-1]
+
+    accelerator_client = compute_v1.AcceleratorTypesClient()
+    try:
+        accelerator_client.get(
+            project=cfg["project"],
+            zone=cfg["zone"],
+            accelerator_type=accelerator_name,
+        )
+        print(
+            "Pre-check GPU: tipo de acelerador disponível na zona "
+            f"({accelerator_name} em {cfg['zone']})."
+        )
+    except gcp_exceptions.NotFound as exc:
+        message = f"GPU '{accelerator_name}' não está disponível na zona {cfg['zone']}."
+        suggestions = _suggest_alternative_zones_for_gpu(
+            cfg,
+            accelerator_name=accelerator_name,
+            gpu_type=options.gpu_type,
+        )
+        if suggestions:
+            message += (
+                " Zonas alternativas sugeridas: "
+                + ", ".join(suggestions)
+                + "."
+            )
+        if strict:
+            raise RuntimeError(message) from exc
+        print(f"Aviso (dry-run): {message}")
+        return
+    except gcp_exceptions.GoogleAPICallError as exc:
+        print(
+            "Aviso: não foi possível validar disponibilidade zonal do acelerador via API. "
+            "A execução continuará sem esta garantia."
+        )
+        print(f"Detalhe do pre-check de zona: {exc}")
+        return
+
+    region = _zone_to_region(cfg["zone"])
+    region_client = compute_v1.RegionsClient()
+    try:
+        region_info = region_client.get(project=cfg["project"], region=region)
+    except gcp_exceptions.GoogleAPICallError as exc:
+        print(
+            "Aviso: não foi possível consultar quota regional de GPU. "
+            "A execução continuará sem validação de quota."
+        )
+        print(f"Detalhe do pre-check de quota: {exc}")
+        return
+
+    quotas = {q.metric: q for q in (region_info.quotas or [])}
+    metric = None
+    for candidate in _gpu_quota_metric_candidates(options.gpu_type, options.use_spot):
+        if candidate in quotas:
+            metric = candidate
+            break
+
+    if metric is None:
+        print(
+            "Aviso: nenhuma métrica de quota específica de GPU foi encontrada para validação "
+            "(verifique quotas manualmente no projeto)."
+        )
+        return
+
+    quota = quotas[metric]
+    available = float(quota.limit) - float(quota.usage)
+    print(
+        f"Pre-check GPU quota ({metric}): limite={quota.limit}, "
+        f"uso={quota.usage}, disponível={available}."
+    )
+    if available < options.gpu_count:
+        message = (
+            "Quota insuficiente para GPU. "
+            f"Necessário={options.gpu_count}, disponível={available} "
+            f"(métrica {metric}, região {region})."
+        )
+        if strict:
+            raise RuntimeError(message)
+        print(f"Aviso (dry-run): {message}")
+
+
 def _required_setting(name: str) -> str:
     value = settings.get(name)
     if not value:
@@ -811,6 +965,8 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("--disk-size-gb deve ser maior ou igual a 1.")
         cfg = _load_config()
         options = _resolve_provisioning_options(args, cfg)
+        if args.action in {"create", "cycle"}:
+            _precheck_gpu_zone_and_quota(cfg, options, strict=not args.dry_run)
         client = compute_v1.InstancesClient()
         if args.dry_run:
             _print_provisioning_plan(cfg, action=args.action, options=options)
