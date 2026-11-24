@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from typing import Any
 
 from google.api_core import exceptions as gcp_exceptions
@@ -27,6 +28,74 @@ DISK_SKU_PREFIXES = {
     "pd-ssd": "SSD backed PD Capacity",
 }
 
+GPU_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
+    "l4": ("L4", "NVIDIA L4", "TESLA L4"),
+    "t4": ("T4", "NVIDIA T4", "TESLA T4"),
+    "a100": ("A100", "NVIDIA A100", "TESLA A100"),
+    "h100": ("H100", "NVIDIA H100"),
+    "v100": ("V100", "NVIDIA V100", "TESLA V100"),
+    "p100": ("P100", "NVIDIA P100", "TESLA P100"),
+    "p4": ("P4", "NVIDIA P4", "TESLA P4"),
+}
+
+LLM_PROFILES: dict[str, dict[str, Any]] = {
+    "none": {},
+    "llm-small": {
+        "machine_type": "n1-standard-16",
+        "boot_disk_size_gb": 500,
+        "boot_disk_type": "pd-ssd",
+        "enable_gpu": True,
+        "gpu_type": "nvidia-tesla-l4",
+        "gpu_count": 1,
+    },
+    "llm-medium": {
+        "machine_type": "n1-standard-32",
+        "boot_disk_size_gb": 1000,
+        "boot_disk_type": "pd-ssd",
+        "enable_gpu": True,
+        "gpu_type": "nvidia-tesla-a100",
+        "gpu_count": 1,
+    },
+    "llm-large": {
+        "machine_type": "n1-standard-64",
+        "boot_disk_size_gb": 2000,
+        "boot_disk_type": "pd-ssd",
+        "enable_gpu": True,
+        "gpu_type": "nvidia-tesla-a100",
+        "gpu_count": 4,
+    },
+}
+
+
+@dataclass
+class ProvisioningOptions:
+    machine_type: str
+    boot_disk_size_gb: int
+    boot_disk_type: str
+    use_spot: bool
+    enable_gpu: bool
+    gpu_type: str | None
+    gpu_count: int
+
+
+def _print_provisioning_plan(
+    cfg: dict[str, str],
+    *,
+    action: str,
+    options: ProvisioningOptions,
+) -> None:
+    print("=== DRY RUN: plano de execução (sem alterações) ===")
+    print(f"Projeto/Zona: {cfg['project']}/{cfg['zone']}")
+    print(f"Instância alvo: {cfg['instance']}")
+    print(f"Ação solicitada: {action}")
+    print(f"Machine type efetivo: {options.machine_type}")
+    print(f"Disco de boot: {options.boot_disk_size_gb} GB ({options.boot_disk_type})")
+    print(f"Spot: {'sim' if options.use_spot else 'não'}")
+    if options.enable_gpu:
+        print(f"GPU: {options.gpu_count} x {options.gpu_type}")
+    else:
+        print("GPU: desabilitada")
+
 
 def _required_setting(name: str) -> str:
     value = settings.get(name)
@@ -48,13 +117,33 @@ def _load_config() -> dict[str, str]:
     }
 
 
-def _build_instance_payload(cfg: dict[str, str]) -> compute_v1.Instance:
+def _machine_type_uri(project: str, zone: str, machine_type: str) -> str:
+    if "/" in machine_type:
+        return machine_type
+    return f"projects/{project}/zones/{zone}/machineTypes/{machine_type}"
+
+
+def _disk_type_uri(project: str, zone: str, disk_type: str) -> str:
+    mapping = {
+        "pd-standard": "pd-standard",
+        "pd-balanced": "pd-balanced",
+        "pd-ssd": "pd-ssd",
+    }
+    if disk_type not in mapping:
+        raise ValueError(
+            f"Tipo de disco não suportado: {disk_type}. Use: {sorted(mapping.keys())}"
+        )
+    return f"projects/{project}/zones/{zone}/diskTypes/{mapping[disk_type]}"
+
+
+def _build_instance_payload(cfg: dict[str, str], options: ProvisioningOptions) -> compute_v1.Instance:
     disk = compute_v1.AttachedDisk(
         boot=True,
         auto_delete=True,
         initialize_params=compute_v1.AttachedDiskInitializeParams(
             source_image=cfg["source_image"],
-            disk_size_gb=10,
+            disk_size_gb=options.boot_disk_size_gb,
+            disk_type=_disk_type_uri(cfg["project"], cfg["zone"], options.boot_disk_type),
         ),
     )
     network_interface = compute_v1.NetworkInterface(
@@ -63,11 +152,37 @@ def _build_instance_payload(cfg: dict[str, str]) -> compute_v1.Instance:
             compute_v1.AccessConfig(name=cfg["nat_name"], type_=cfg["nat_type"]),
         ],
     )
+
+    scheduling = compute_v1.Scheduling(
+        provisioning_model="SPOT" if options.use_spot else "STANDARD",
+        on_host_maintenance="TERMINATE" if options.enable_gpu else "MIGRATE",
+        automatic_restart=(not options.use_spot and not options.enable_gpu),
+    )
+
+    guest_accelerators: list[compute_v1.AcceleratorConfig] = []
+    if options.enable_gpu and options.gpu_type:
+        accelerator_type = (
+            options.gpu_type
+            if "/" in options.gpu_type
+            else (
+                f"projects/{cfg['project']}/zones/{cfg['zone']}/"
+                f"acceleratorTypes/{options.gpu_type}"
+            )
+        )
+        guest_accelerators = [
+            compute_v1.AcceleratorConfig(
+                accelerator_type=accelerator_type,
+                accelerator_count=options.gpu_count,
+            )
+        ]
+
     return compute_v1.Instance(
         name=cfg["instance"],
-        machine_type=cfg["machine_type"],
+        machine_type=_machine_type_uri(cfg["project"], cfg["zone"], options.machine_type),
         disks=[disk],
         network_interfaces=[network_interface],
+        scheduling=scheduling,
+        guest_accelerators=guest_accelerators,
     )
 
 
@@ -84,7 +199,11 @@ def _get_instance(
         return None
 
 
-def _create_if_missing(client: compute_v1.InstancesClient, cfg: dict[str, str]) -> None:
+def _create_if_missing(
+    client: compute_v1.InstancesClient,
+    cfg: dict[str, str],
+    options: ProvisioningOptions,
+) -> None:
     existing = _get_instance(
         client,
         project=cfg["project"],
@@ -99,7 +218,7 @@ def _create_if_missing(client: compute_v1.InstancesClient, cfg: dict[str, str]) 
     operation = client.insert(
         project=cfg["project"],
         zone=cfg["zone"],
-        instance_resource=_build_instance_payload(cfg),
+        instance_resource=_build_instance_payload(cfg, options),
     )
     operation.result()
     print(f"Instância '{cfg['instance']}' criada com sucesso!")
@@ -196,7 +315,88 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Usa SKUs preemptibles/spot para estimativa de custo de compute.",
     )
+    parser.add_argument(
+        "--llm-profile",
+        choices=sorted(LLM_PROFILES.keys()),
+        default="none",
+        help=(
+            "Perfil pré-definido para treino de LLM com recursos altos "
+            "(none, llm-small, llm-medium, llm-large)."
+        ),
+    )
+    parser.add_argument(
+        "--machine-type",
+        help="Sobrescreve o machine type de configuração.",
+    )
+    parser.add_argument(
+        "--boot-disk-size-gb",
+        type=int,
+        help="Sobrescreve tamanho do disco de boot (GB) para provisionamento.",
+    )
+    parser.add_argument(
+        "--boot-disk-type",
+        choices=sorted(DISK_SKU_PREFIXES.keys()),
+        help="Sobrescreve tipo do disco de boot para provisionamento.",
+    )
+    parser.add_argument(
+        "--enable-gpu",
+        action="store_true",
+        help="Habilita GPU na criação da VM.",
+    )
+    parser.add_argument(
+        "--gpu-type",
+        help=(
+            "Tipo da GPU (ex: nvidia-tesla-l4, nvidia-tesla-a100) "
+            "ou URI completa do accelerator type."
+        ),
+    )
+    parser.add_argument(
+        "--gpu-count",
+        type=int,
+        default=1,
+        help="Quantidade de GPUs a anexar quando --enable-gpu estiver ativo.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Mostra o plano e custos sem executar ações mutáveis na instância.",
+    )
     return parser
+
+
+def _resolve_provisioning_options(args: argparse.Namespace, cfg: dict[str, str]) -> ProvisioningOptions:
+    profile = LLM_PROFILES[args.llm_profile]
+
+    machine_type = args.machine_type or profile.get("machine_type") or _machine_type_name(
+        cfg["machine_type"]
+    )
+    boot_disk_size_gb = (
+        args.boot_disk_size_gb
+        if args.boot_disk_size_gb is not None
+        else int(profile.get("boot_disk_size_gb", args.disk_size_gb))
+    )
+    boot_disk_type = args.boot_disk_type or profile.get("boot_disk_type") or args.disk_type
+
+    enable_gpu = bool(args.enable_gpu or profile.get("enable_gpu", False))
+    gpu_type = args.gpu_type or profile.get("gpu_type")
+    gpu_count = int(profile.get("gpu_count", args.gpu_count)) if profile else int(args.gpu_count)
+
+    if enable_gpu and not gpu_type:
+        raise RuntimeError("--enable-gpu requer --gpu-type (ou um --llm-profile com GPU).")
+    if gpu_count < 1:
+        raise RuntimeError("--gpu-count deve ser maior ou igual a 1.")
+    if boot_disk_size_gb < 1:
+        raise RuntimeError("--boot-disk-size-gb deve ser maior ou igual a 1.")
+
+    return ProvisioningOptions(
+        machine_type=machine_type,
+        boot_disk_size_gb=boot_disk_size_gb,
+        boot_disk_type=boot_disk_type,
+        use_spot=bool(args.spot),
+        enable_gpu=enable_gpu,
+        gpu_type=gpu_type,
+        gpu_count=gpu_count,
+    )
 
 
 def _confirm_delete(cfg: dict[str, str]) -> bool:
@@ -214,6 +414,7 @@ def _confirm_delete(cfg: dict[str, str]) -> bool:
 def _run_action(
     client: compute_v1.InstancesClient,
     cfg: dict[str, str],
+    options: ProvisioningOptions,
     action: str,
     *,
     confirm_delete: bool,
@@ -222,7 +423,7 @@ def _run_action(
         _print_instances(client, cfg)
         return
     if action == "create":
-        _create_if_missing(client, cfg)
+        _create_if_missing(client, cfg, options)
         return
     if action == "stop":
         _stop_if_exists(client, cfg)
@@ -234,7 +435,7 @@ def _run_action(
         _delete_if_exists(client, cfg)
         return
     if action == "cycle":
-        _create_if_missing(client, cfg)
+        _create_if_missing(client, cfg, options)
         _print_instances(client, cfg)
         _stop_if_exists(client, cfg)
         if not confirm_delete and not _confirm_delete(cfg):
@@ -249,8 +450,12 @@ def _machine_type_name(machine_type: str) -> str:
     return machine_type.split("/")[-1]
 
 
-def _print_machine_type_details(cfg: dict[str, str]) -> compute_v1.MachineType:
-    machine_type_name = _machine_type_name(cfg["machine_type"])
+def _print_machine_type_details(
+    cfg: dict[str, str],
+    *,
+    machine_type_name: str | None = None,
+) -> compute_v1.MachineType:
+    machine_type_name = machine_type_name or _machine_type_name(cfg["machine_type"])
     machine_types_client = compute_v1.MachineTypesClient()
 
     machine_type_info = machine_types_client.get(
@@ -295,6 +500,26 @@ def _extract_unit_price(sku: billing_v1.Sku) -> float:
         if price > 0:
             return price
     return 0.0
+
+
+def _normalize_gpu_model(gpu_type: str | None) -> str | None:
+    if not gpu_type:
+        return None
+    raw = gpu_type.lower().split("/")[-1]
+    raw = raw.replace("nvidia-tesla-", "")
+    raw = raw.replace("nvidia-", "")
+    raw = raw.replace("tesla-", "")
+    return raw.strip()
+
+
+def _gpu_match_tokens(gpu_type: str | None) -> tuple[str, ...]:
+    model = _normalize_gpu_model(gpu_type)
+    if not model:
+        return tuple()
+    aliases = GPU_MODEL_ALIASES.get(model, (model.upper(),))
+    normalized_aliases = list(aliases)
+    normalized_aliases.append(model.replace("-", "").upper())
+    return tuple(dict.fromkeys(normalized_aliases))
 
 
 def _resolve_service_id(
@@ -345,6 +570,8 @@ def _estimate_instance_cost_e2(
     disk_type: str,
     disk_size_gb: int,
     is_spot: bool,
+    gpu_type: str | None,
+    gpu_count: int,
 ) -> dict[str, float | str]:
     if disk_type not in DISK_SKU_PREFIXES:
         raise ValueError(
@@ -367,6 +594,10 @@ def _estimate_instance_cost_e2(
     price_core = None
     price_ram = None
     price_disk_gb_month = None
+    price_gpu_hour = 0.0
+
+    gpu_tokens = _gpu_match_tokens(gpu_type)
+    best_gpu_score = -1
 
     for sku in skus_pager:
         if region not in sku.service_regions:
@@ -388,6 +619,24 @@ def _estimate_instance_cost_e2(
         elif family == "Storage" and usage == "OnDemand":  # noqa: SIM102
             if price_disk_gb_month is None and description.startswith(disk_prefix):
                 price_disk_gb_month = _extract_unit_price(sku)
+        elif family in {"Compute", "GPU"} and gpu_tokens:
+            desc_upper = description.upper()
+            group_upper = (sku.category.resource_group or "").upper()
+            if "GPU" not in desc_upper and "GPU" not in group_upper:
+                continue
+            if not any(token in desc_upper for token in gpu_tokens):
+                continue
+
+            candidate_price = _extract_unit_price(sku)
+            if candidate_price <= 0:
+                continue
+
+            # Prefere SKU com o usage exato (OnDemand vs Preemptible),
+            # mas aceita fallback quando o catálogo não separa por usage_type.
+            score = 2 if usage == compute_usage_type else 1
+            if score > best_gpu_score:
+                best_gpu_score = score
+                price_gpu_hour = candidate_price
 
         if None not in (price_core, price_ram, price_disk_gb_month):
             break
@@ -399,7 +648,9 @@ def _estimate_instance_cost_e2(
         )
 
     cost_compute_hour = (price_core * billable_vcpus) + (price_ram * ram_gb)
+    cost_gpu_hour = price_gpu_hour * gpu_count
     cost_compute_month = cost_compute_hour * 730
+    cost_gpu_month = cost_gpu_hour * 730
 
     cost_disk_month = price_disk_gb_month * disk_size_gb
     cost_disk_hour = cost_disk_month / 730
@@ -412,9 +663,10 @@ def _estimate_instance_cost_e2(
         "disk_type": disk_type,
         "disk_size_gb": float(disk_size_gb),
         "cost_compute_hour_usd": cost_compute_hour,
+        "cost_gpu_hour_usd": cost_gpu_hour,
         "cost_disk_hour_usd": cost_disk_hour,
-        "cost_total_hour_running_usd": cost_compute_hour + cost_disk_hour,
-        "cost_total_month_running_usd": cost_compute_month + cost_disk_month,
+        "cost_total_hour_running_usd": cost_compute_hour + cost_gpu_hour + cost_disk_hour,
+        "cost_total_month_running_usd": cost_compute_month + cost_gpu_month + cost_disk_month,
         "cost_month_terminated_usd": cost_disk_month,
     }
 
@@ -428,6 +680,8 @@ def _print_cost_estimate(
     disk_type: str,
     disk_size_gb: int,
     is_spot: bool,
+    gpu_type: str | None,
+    gpu_count: int,
 ) -> None:
     result = _estimate_instance_cost_e2(
         machine_type_name=machine_type_name,
@@ -437,6 +691,8 @@ def _print_cost_estimate(
         disk_type=disk_type,
         disk_size_gb=disk_size_gb,
         is_spot=is_spot,
+        gpu_type=gpu_type,
+        gpu_count=gpu_count,
     )
 
     print("=== Estimativa de Custo da VM (Catalog API) ===")
@@ -445,10 +701,16 @@ def _print_cost_estimate(
     print(f"RAM: {result['ram_gb']:.2f} GB")
     print(f"Disco: {int(result['disk_size_gb'])} GB ({result['disk_type']})")
     print(f"Custo compute/hora: ${result['cost_compute_hour_usd']:.6f} USD")
+    print(f"Custo GPU/hora:     ${result['cost_gpu_hour_usd']:.6f} USD")
     print(f"Custo disco/hora:   ${result['cost_disk_hour_usd']:.6f} USD")
     print(f"Custo total/hora (RUNNING): ${result['cost_total_hour_running_usd']:.6f} USD")
     print(f"Custo total/mês (RUNNING):  ${result['cost_total_month_running_usd']:.2f} USD")
     print(f"Custo/mês (TERMINATED):     ${result['cost_month_terminated_usd']:.2f} USD")
+    if gpu_type and gpu_count > 0 and float(result["cost_gpu_hour_usd"]) == 0.0:
+        print(
+            "Aviso: GPU habilitada, mas SKU de GPU não encontrado no filtro atual "
+            "(o custo de GPU pode estar subestimado)."
+        )
 
 
 def _print_billing_catalog(cfg: dict[str, str], limit: int) -> None:
@@ -506,18 +768,23 @@ def _collect_gcp_catalog(
     disk_type: str,
     disk_size_gb: int,
     is_spot: bool,
+    machine_type_name: str,
+    gpu_type: str | None,
+    gpu_count: int,
 ) -> None:
-    machine_type_info = _print_machine_type_details(cfg)
+    machine_type_info = _print_machine_type_details(cfg, machine_type_name=machine_type_name)
     _print_billing_catalog(cfg, limit)
     try:
         _print_cost_estimate(
             cfg,
-            machine_type_name=_machine_type_name(cfg["machine_type"]),
+            machine_type_name=machine_type_name,
             vcpus_api=machine_type_info.guest_cpus,
             ram_gb=machine_type_info.memory_mb / 1024,
             disk_type=disk_type,
             disk_size_gb=disk_size_gb,
             is_spot=is_spot,
+            gpu_type=gpu_type,
+            gpu_count=gpu_count,
         )
     except (
         ValueError,
@@ -543,15 +810,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.disk_size_gb < 1:
             raise RuntimeError("--disk-size-gb deve ser maior ou igual a 1.")
         cfg = _load_config()
+        options = _resolve_provisioning_options(args, cfg)
         client = compute_v1.InstancesClient()
-        _run_action(client, cfg, args.action, confirm_delete=args.confirm_delete)
+        if args.dry_run:
+            _print_provisioning_plan(cfg, action=args.action, options=options)
+        else:
+            _run_action(client, cfg, options, args.action, confirm_delete=args.confirm_delete)
         if args.fetch_catalog:
             _collect_gcp_catalog(
                 cfg,
                 limit=args.catalog_limit,
-                disk_type=args.disk_type,
-                disk_size_gb=args.disk_size_gb,
+                disk_type=options.boot_disk_type,
+                disk_size_gb=options.boot_disk_size_gb,
                 is_spot=args.spot,
+                machine_type_name=options.machine_type,
+                gpu_type=options.gpu_type if options.enable_gpu else None,
+                gpu_count=options.gpu_count if options.enable_gpu else 0,
             )
         return 0
     except (RuntimeError, gcp_exceptions.GoogleAPICallError) as exc:
