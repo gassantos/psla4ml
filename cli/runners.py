@@ -403,8 +403,14 @@ def run_skyband_analysis(
     logger.info("%d resultados carregados (%d bem-sucedidos)", len(results), len(success))
 
     if not success:
-        logger.error("Nenhum experimento com status=success encontrado.")
-        sys.exit(1)
+        if require_state:
+            logger.error("Nenhum experimento com status=success encontrado.")
+            sys.exit(1)
+        logger.info(
+            "Análise Skyband ignorada: estado carregado sem resultados com status=success. "
+            "Isso é esperado quando a execução atual não é um grid search completo."
+        )
+        return
 
     # ── Carrega perfil de SLA (sobrescreve constraints/k/metrics se fornecido) ─
     if sla_profile_name:
