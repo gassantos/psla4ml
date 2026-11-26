@@ -226,7 +226,8 @@ class GridCommand(Command):
             gpu_ids=args.gpu,
             tpu_cores=args.tpu_cores,
             precision=args.precision,
-        )
+            collect_resource_catalog=args.resource_catalog,
+        ) 
         if not args.no_skyband:
             run_skyband_analysis(
                 k=args.skyband_k,
