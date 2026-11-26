@@ -15,6 +15,23 @@ from cli.parser import build_argument_parser
 from cli.runners import run_single_experiment
 
 
+@pytest.fixture(autouse=True)
+def prewarm_calls(monkeypatch):
+    """Evita carregar modelo/dataset reais e registra os prewarms do modo single."""
+    calls = []
+
+    def fake_prewarm(base_config_path, dataset_overrides=None, *, strict=True):
+        calls.append({"config": base_config_path, "overrides": dataset_overrides, "strict": strict})
+
+    monkeypatch.setattr("cli.commands.prewarm_huggingface", fake_prewarm)
+    monkeypatch.setattr("cli.runners.prewarm_huggingface", fake_prewarm)
+    monkeypatch.setattr(
+        "cli.runners._enable_hf_offline_mode",
+        lambda: pytest.fail("o modo single n\u00e3o deve ligar HF_HUB_OFFLINE"),
+    )
+    return calls
+
+
 def test_parser_resolves_bertpli_workflow_command():
     args = build_argument_parser().parse_args(["--workflow", "bertpli", "--workflow-dry-run"])
 
@@ -206,3 +223,107 @@ class _MonitoringConfig:
     @staticmethod
     def getboolean(*_args, **_kwargs):
         return False
+
+def test_single_huggingface_prewarms_cache_before_measuring(monkeypatch, tmp_path, prewarm_calls):
+    order = []
+    monkeypatch.setattr("cli.commands.write_workflow_run", lambda wf: tmp_path / wf.experiment_run_id)
+    monkeypatch.setattr("cli.commands.load_config", lambda _path: _MonitoringConfig())
+    monkeypatch.setattr("cli.commands.get_torch_device", lambda: {"type": "CPU"})
+    monkeypatch.setattr(
+        "cli.commands.prewarm_huggingface", lambda *a, **k: order.append("prewarm"),
+    )
+    monkeypatch.setattr(
+        "experiment.workflow_templates._build_huggingface_dataset_probe",
+        lambda *_a, **_k: lambda: order.append("measured_ingest") or {"records": 1, "fields": [], "source": "hub"},
+    )
+    monkeypatch.setattr(
+        "experiment.workflow_templates._launch_experiment",
+        lambda **_k: {"experiment": {"status": "success"}, "resources": {}, "evaluation": {}},
+    )
+    args = build_argument_parser().parse_args([
+        "--mode", "single", "--no-skyband",
+        "--dataset-source", "hub", "--dataset-id", "nyu-mll/glue", "--dataset-config", "mrpc",
+    ])
+
+    SingleCommand().execute(args, {})
+
+    assert order == ["prewarm", "measured_ingest"]
+
+
+def test_single_prewarm_is_not_strict_and_receives_dataset_overrides(monkeypatch, tmp_path, prewarm_calls):
+    monkeypatch.setattr("cli.commands.write_workflow_run", lambda wf: tmp_path / wf.experiment_run_id)
+    monkeypatch.setattr("cli.commands.load_config", lambda _path: _MonitoringConfig())
+    monkeypatch.setattr("cli.commands.get_torch_device", lambda: {"type": "CPU"})
+    monkeypatch.setattr(
+        "experiment.workflow_templates._build_huggingface_dataset_probe",
+        lambda *_a, **_k: lambda: {"records": 1, "fields": [], "source": "hub"},
+    )
+    monkeypatch.setattr(
+        "experiment.workflow_templates._launch_experiment",
+        lambda **_k: {"experiment": {"status": "success"}, "resources": {}, "evaluation": {}},
+    )
+    prewarm_calls.clear()
+    args = build_argument_parser().parse_args([
+        "--mode", "single", "--no-skyband",
+        "--dataset-source", "hub", "--dataset-id", "nyu-mll/glue", "--dataset-config", "mrpc",
+    ])
+
+    SingleCommand().execute(args, {})
+
+    (call,) = prewarm_calls
+    assert call["strict"] is False
+    assert call["overrides"]["hf_dataset_id"] == "nyu-mll/glue"
+
+
+def test_single_run_context_reads_hyperparameters_through_param_mapping(monkeypatch):
+    from cli.runners import single_run_context
+
+    monkeypatch.setenv("PSLA4ML_MACHINE_NAME", "host-1")
+
+    context = single_run_context("config/experiments/BertPLI.config")
+
+    assert context["parallel_workers"] == 1
+    assert context["resource_machine_name"] == "host-1"
+    expected = {
+        "learning_rate": "2e-5", "batch_size": "16", "optimizer": "adamw", "dropout": "0.1",
+        "seed": "42", "num_epochs": "4", "max_seq_length": "256",
+    }
+    assert expected.items() <= context["grid_params"].items()
+
+
+def test_single_run_context_columns_all_exist_in_the_summary():
+    from cli.runners import single_run_context
+    from experiment import persistence
+
+    context = single_run_context("config/experiments/BertPLI.config")
+
+    unknown = (set(context) - set(persistence.CONTEXT_COLUMNS) - {"grid_params"}) | (
+        set(context["grid_params"]) - set(persistence.GRID_PARAM_NAMES)
+    )
+    assert not unknown
+
+
+def test_single_workflow_writes_environment_and_hyperparameters_to_the_summary(monkeypatch, tmp_path):
+    import csv
+
+    from experiment import persistence
+
+    monkeypatch.setattr(persistence, "METRICS_DIR", tmp_path)
+    monkeypatch.setenv("PSLA4ML_MACHINE_NAME", "host-9")
+    monkeypatch.setattr("cli.commands.write_workflow_run", lambda wf: tmp_path / wf.experiment_run_id)
+    monkeypatch.setattr("cli.commands.load_config", lambda _path: _MonitoringConfig())
+    monkeypatch.setattr("cli.commands.get_torch_device", lambda: {"type": "CPU"})
+    monkeypatch.setattr(
+        "experiment.workflow_templates._launch_experiment",
+        lambda **_k: {"experiment": {"status": "success"}, "resources": {}, "evaluation": {}},
+    )
+    args = build_argument_parser().parse_args(["--mode", "single", "--no-skyband"])
+
+    SingleCommand().execute(args, {})
+
+    with open(next(tmp_path.glob("experiment_summary_*.csv")), newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert rows and all(row["resource_machine_name"] == "host-9" for row in rows)
+    assert all(row["configured_environment"] for row in rows)
+    assert all(row["parallel_workers"] == "1" for row in rows)
+    assert all(row["grid_batch_size"] == "16" and row["grid_optimizer"] == "adamw" for row in rows)

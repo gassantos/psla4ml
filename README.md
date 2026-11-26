@@ -8,7 +8,7 @@
 
 PSLA4ML mede execuções de aprendizado de máquina, explora configurações de recursos e hiperparâmetros e seleciona trade-offs por k-Skyband. Toda execução é um **workflow rastreável**, com tarefas, artefatos versionados, telemetria e manifesto persistido.
 
-Referência: Santos, G.; Bedo, M.; Frota, Y.; Oliveira, D. *Definição de Acordos de Nível de Serviço Personalizados para Treinamento de Modelos via Consultas k-Skyband*. SBBD 2026. [DOI](https://doi.org/10.5753/sbbd.2026.249138).
+Referência: Santos, G.; Bedo, M.; Frota, Y.; Oliveira, D. _Definição de Acordos de Nível de Serviço Personalizados para Treinamento de Modelos via Consultas k-Skyband_. SBBD 2026. [DOI](https://doi.org/10.5753/sbbd.2026.249138).
 
 ## Instalação
 
@@ -234,6 +234,13 @@ enable_monitoring = true
 
 O custo pode ser derivado de `ENERGY_COST_USD_PER_KWH` ou da taxa horária declarada no ambiente do grid.
 
+O manifesto em `workflow_runs` é a fonte de verdade da telemetria. Cada resultado em
+`grid_search_state_*.json` replica essa estrutura em `task_telemetry`, com atividade,
+regime, status e tentativas de cada tarefa; o campo `resources` continua como resumo
+compatível com Skyband, derivado dessas tentativas. O `experiment_summary_*.csv` usa
+uma linha por tentativa de tarefa, com as métricas padronizadas em colunas e contexto,
+artefatos e métricas adicionais em campos JSON.
+
 ## Skyband, SLA e Tiers
 
 Skyband é executado automaticamente após `single` ou `grid`; use `--no-skyband` para desativá-lo.
@@ -265,8 +272,8 @@ Perfis em `gridsearch/config/sla_profiles.json`: `economico`, `sustentavel`, `te
 
 ## Estrutura
 
-```
-📁 gridsearch-skyband/
+```text
+📁 psla4ml/
 │
 ├── 🐍 main.py          CLI principal
 ├── 📁 cli/             Parser, comandos e orquestração

@@ -11,9 +11,13 @@ Autor: Gustavo Alexandre
 import configparser
 import logging
 import os
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
+import platform
+import shutil
+from datetime import datetime
+from functools import lru_cache
+from typing import Any
+
+import psutil
 
 from utils.paths import PathManager
 
@@ -25,6 +29,11 @@ PathManager.ensure_dir(METRICS_DIR)
 
 # Tarifa de energia (USD/kWh) — configurável via variável de ambiente
 ENERGY_COST_USD_PER_KWH = float(os.getenv("ENERGY_COST_USD_PER_KWH", "0.12"))
+
+
+def _current_energy_cost_usd_per_kwh() -> float:
+    """Retorna a tarifa atual em USD/kWh considerando o ambiente de execução."""
+    return float(os.getenv("ENERGY_COST_USD_PER_KWH", str(ENERGY_COST_USD_PER_KWH)))
 
 
 def compute_cost_usd(
@@ -63,12 +72,102 @@ def compute_cost_usd(
         return (train_time_sec / 3600.0) * environment_cost_per_hour_usd
     if energy_kwh is None:
         return None
-    return energy_kwh * ENERGY_COST_USD_PER_KWH
+    return energy_kwh * _current_energy_cost_usd_per_kwh()
 
 
 def now_iso() -> str:
     """Retorna o instante atual em formato ISO 8601 com timezone UTC."""
     return datetime.now().astimezone().isoformat()
+
+
+def get_machine_name() -> str:
+    """Retorna o identificador da máquina de execução de forma estável.
+
+    Prioriza variáveis de ambiente comuns em cloud e desktop e faz fallback
+    para ``platform.node()`` quando necessário.
+    """
+    for key in ("PSLA4ML_MACHINE_NAME", "COMPUTERNAME", "HOSTNAME"):
+        value = os.getenv(key)
+        if value and value.strip():
+            return value.strip()
+    node = platform.node().strip()
+    return node or "unknown-machine"
+
+
+def normalize_environment_label(value: str | None) -> str:
+    """Normaliza um rótulo de ambiente para o conjunto canônico do projeto.
+
+    Valores suportados: ``LOCAL``, ``COLAB``, ``AWS``, ``AZURE``, ``GCP``.
+    """
+    raw = (value or "").strip().upper()
+    if raw in {"COLAB", "AZURE", "GCP", "AWS"}:
+        return raw
+    else:
+        return "LOCAL"
+
+
+def detect_execution_environment() -> str:
+    """Detecta o ambiente real de execução da máquina atual.
+
+    Regras:
+    - ``COLAB``: execução no Google Colab.
+    - ``AZURE``: variáveis típicas de App Service/Functions/identidade Azure.
+    - ``GCP``: variáveis típicas de Cloud Run/Functions/App Engine/GCE.
+    - ``AWS``: variáveis típicas de Lambda/ECS/EC2.
+    - fallback ``LOCAL``.
+    """
+    env = os.environ
+    if any(env.get(key) for key in ("COLAB_RELEASE_TAG", "COLAB_GPU", "COLAB_BACKEND_VERSION")):
+        return "COLAB"
+    if any(env.get(key) for key in ("WEBSITE_SITE_NAME", "FUNCTIONS_WORKER_RUNTIME", "AZURE_HTTP_USER_AGENT", "IDENTITY_ENDPOINT")):
+        return "AZURE"
+    if any(env.get(key) for key in ("GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "K_SERVICE", "FUNCTION_TARGET", "GAE_ENV")):
+        return "GCP"
+    if any(env.get(key) for key in ("AWS_EXECUTION_ENV", "AWS_REGION", "AWS_DEFAULT_REGION", "LAMBDA_TASK_ROOT", "ECS_CONTAINER_METADATA_URI", "ECS_CONTAINER_METADATA_URI_V4")):
+        return "AWS"
+    return "LOCAL"
+
+
+@lru_cache(maxsize=1)
+def _static_hardware() -> tuple[int, int, str | None]:
+    """CPU lógicas, nº de GPUs e modelo(s); fixos no processo e custosos de consultar no CUDA."""
+    gpu_count, gpu_model = 0, None
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            gpu_model = ", ".join(dict.fromkeys(torch.cuda.get_device_name(i) for i in range(gpu_count)))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Detecção de GPU indisponível: %s", exc)
+    return psutil.cpu_count(logical=True) or 1, gpu_count, gpu_model
+
+
+def hardware_info() -> dict[str, Any]:
+    """CPU, GPU e disco da máquina, nas colunas do ``experiment_summary`` (sem rede nem benchmark).
+
+    O disco é o do diretório de saída das métricas e é relido a cada chamada.
+    """
+    cpu_count, gpu_count, gpu_model = _static_hardware()
+    disk = shutil.disk_usage(METRICS_DIR)
+    return {
+        "cpu_count": cpu_count,
+        "gpu_count": gpu_count,
+        "gpu_model": gpu_model,
+        "disk_total_gb": round(disk.total / 1024 ** 3, 2),
+        "disk_free_gb": round(disk.free / 1024 ** 3, 2),
+    }
+
+
+def execution_context() -> dict[str, Any]:
+    """Ambiente, máquina e hardware onde a execução ocorre, nas colunas do ``experiment_summary``."""
+    machine_name = get_machine_name()
+    return {
+        "selected_environment": machine_name,
+        "configured_environment": detect_execution_environment(),
+        "resource_machine_name": machine_name,
+        **hardware_info(),
+    }
 
 
 def load_config(path: str) -> configparser.ConfigParser:

@@ -33,6 +33,7 @@ from .bertpli_workflow import (  # noqa: F401
     build_bertpli_task_functions,
     build_bertpli_workflow,
 )
+from .bootstrap_lock import BootstrapLock  # noqa: F401
 from .estimation import estimate_workflow_resources  # noqa: F401
 from .generic_workflow import (  # noqa: F401
     GenericTaskSpec,
@@ -63,6 +64,7 @@ from .task_executor import (  # noqa: F401
 )
 from .task_telemetry import TaskTelemetryCollector  # noqa: F401
 from .workflow import (  # noqa: F401
+    INFRA_RETRY_POLICY,
     ArtifactDefinition,
     ArtifactKind,
     ExecutionRegime,

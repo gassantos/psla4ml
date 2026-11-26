@@ -23,7 +23,7 @@ def _definition():
         (
             TaskDefinition(
                 "prepare", "Preparar", "prepare", config={"source": "v1"},
-                input_signatures={"dataset": "abc"}, retry_policy=RetryPolicy(2, ("TimeoutError",)),
+                input_signatures={"dataset": "abc"}, retry_policy=RetryPolicy(2, ("InfraError",)),
             ),
             TaskDefinition("train", "Treinar", "train", depends_on=("prepare",)),
         ),

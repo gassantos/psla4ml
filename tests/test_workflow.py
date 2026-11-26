@@ -7,7 +7,9 @@ from experiment.task_executor import (
     ParallelWorkflowExecutor,
     SequentialWorkflowExecutor,
 )
+from experiment.task_telemetry import TaskTelemetryCollector
 from experiment.workflow import (
+    INFRA_RETRY_POLICY,
     ArtifactDefinition,
     ArtifactKind,
     ExecutionRegime,
@@ -20,6 +22,7 @@ from experiment.workflow import (
     TaskExecutionAttempt,
     TaskRun,
     TaskStatus,
+    classify_error_type,
     legacy_task_run,
 )
 from experiment.workflow_planner import WorkflowPlanner
@@ -193,7 +196,7 @@ def test_sequential_executor_does_not_retry_non_eligible_error():
             TaskDefinition(
                 task_id="train",
                 name="Treinar",
-                retry_policy=RetryPolicy(max_attempts=3, retryable_error_types=("TimeoutError",)),
+                retry_policy=RetryPolicy(max_attempts=3, retryable_error_types=("InfraError",)),
             ),
         ),
     )
@@ -218,7 +221,7 @@ def test_sequential_executor_retries_eligible_error_type():
             TaskDefinition(
                 task_id="train",
                 name="Treinar",
-                retry_policy=RetryPolicy(max_attempts=2, retryable_error_types=("TimeoutError",)),
+                retry_policy=RetryPolicy(max_attempts=2, retryable_error_types=("InfraError",)),
             ),
         ),
     )
@@ -235,7 +238,8 @@ def test_sequential_executor_retries_eligible_error_type():
 
     assert workflow.status == "success"
     assert calls == 2
-    assert workflow.tasks[0].attempts[0].error_type == "TimeoutError"
+    assert workflow.tasks[0].attempts[0].error_type == "InfraError"
+    assert workflow.tasks[0].attempts[0].root_error_type == "TimeoutError"
 
 
 def test_retry_policy_requires_positive_max_attempts():
@@ -444,7 +448,7 @@ def test_parallel_executor_runs_independent_tasks_concurrently():
 
     def independent(task_id: str) -> dict:
         started.append(task_id)
-        barrier.wait(timeout=1)
+        barrier.wait(timeout=3)
         return {}
 
     executor = ParallelWorkflowExecutor(
@@ -454,11 +458,12 @@ def test_parallel_executor_runs_independent_tasks_concurrently():
             "final": lambda: {"artifacts": {"done": True}},
         },
         max_workers=2,
+        telemetry=TaskTelemetryCollector(enable_emissions=False),
     )
 
     run_thread = Thread(target=lambda: executor.execute(definition))
     run_thread.start()
-    barrier.wait(timeout=1)
+    barrier.wait(timeout=3)
     run_thread.join(timeout=2)
 
     assert sorted(started) == ["first", "second"]
@@ -624,3 +629,203 @@ def test_planner_rejects_indirect_cycle():
 
     with pytest.raises(ValueError, match="first.*second.*third"):
         WorkflowPlanner().plan(definition)
+
+
+# ---------------------------------------------------------------------------
+# classify_error_type
+# ---------------------------------------------------------------------------
+
+class _FakeReadTimeout(Exception):
+    """Stub que imita requests.exceptions.ReadTimeout sem importar requests."""
+
+
+def test_classify_error_type_returns_infra_error_for_builtin_timeout():
+    assert classify_error_type(TimeoutError("conn")) == "InfraError"
+
+
+def test_classify_error_type_returns_class_name_for_generic_exception():
+    assert classify_error_type(ValueError("bad value")) == "ValueError"
+
+
+def test_classify_error_type_returns_class_name_for_unknown_exception():
+    class CustomDomainError(Exception):
+        pass
+
+    assert classify_error_type(CustomDomainError()) == "CustomDomainError"
+
+
+def test_classify_error_type_maps_requests_read_timeout(monkeypatch):
+    """Verifica mapeamento via isinstance quando requests está disponível."""
+    try:
+        import requests.exceptions as req_exc  # type: ignore
+    except ImportError:
+        pytest.skip("requests não disponível")
+
+    exc = req_exc.ReadTimeout("hub timeout")
+    assert classify_error_type(exc) == "InfraError"
+
+
+def test_classify_error_type_maps_requests_connect_timeout(monkeypatch):
+    try:
+        import requests.exceptions as req_exc
+    except ImportError:
+        pytest.skip("requests não disponível")
+
+    exc = req_exc.ConnectTimeout("connect timeout")
+    assert classify_error_type(exc) == "InfraError"
+
+
+def test_executor_sets_infra_error_and_root_error_type_on_timeout():
+    """Executor preenche error_type=InfraError e root_error_type=ReadTimeout."""
+    try:
+        import requests.exceptions as req_exc
+    except ImportError:
+        pytest.skip("requests não disponível")
+
+    def _failing_task():
+        raise req_exc.ReadTimeout("hub indisponível")
+
+    definition = ExperimentDefinition(
+        name="infra-test",
+        tasks=(TaskDefinition(task_id="t1", name="Falha de rede"),),
+    )
+    executor = SequentialWorkflowExecutor({"t1": _failing_task})
+    run = executor.execute(definition)
+
+    attempt = run.tasks[0].attempts[0]
+    assert attempt.error_type == "InfraError"
+    assert attempt.root_error_type == "ReadTimeout"
+    assert run.tasks[0].status == TaskStatus.FAILED
+
+
+def test_executor_does_not_set_root_error_type_for_non_infra_errors():
+    """root_error_type fica None quando não é InfraError."""
+    def _failing_task():
+        raise RuntimeError("erro funcional")
+
+    definition = ExperimentDefinition(
+        name="func-error-test",
+        tasks=(TaskDefinition(task_id="t1", name="Erro funcional"),),
+    )
+    executor = SequentialWorkflowExecutor({"t1": _failing_task})
+    run = executor.execute(definition)
+
+    attempt = run.tasks[0].attempts[0]
+    assert attempt.error_type == "RuntimeError"
+    assert attempt.root_error_type is None
+
+
+# ---------------------------------------------------------------------------
+# INFRA_RETRY_POLICY — retry seletivo para InfraError
+# ---------------------------------------------------------------------------
+
+def test_infra_retry_policy_only_retries_infra_error():
+    calls = 0
+
+    def _task():
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise TimeoutError("transitório")
+        return {}
+
+    definition = ExperimentDefinition(
+        name="retry-infra",
+        tasks=(TaskDefinition("t1", "Tarefa", retry_policy=INFRA_RETRY_POLICY),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _task}).execute(definition)
+
+    assert run.status == "success"
+    assert calls == 3
+    assert len(run.tasks[0].attempts) == 3
+    assert run.tasks[0].attempts[0].error_type == "InfraError"
+    assert run.tasks[0].attempts[0].root_error_type == "TimeoutError"
+
+
+def test_infra_retry_policy_does_not_retry_functional_error():
+    calls = 0
+
+    def _task():
+        nonlocal calls
+        calls += 1
+        raise ValueError("configuração inválida")
+
+    definition = ExperimentDefinition(
+        name="no-retry-func",
+        tasks=(TaskDefinition("t1", "Tarefa", retry_policy=INFRA_RETRY_POLICY),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _task}).execute(definition)
+
+    assert run.status == "failed"
+    assert calls == 1
+    assert len(run.tasks[0].attempts) == 1
+    assert run.tasks[0].attempts[0].error_type == "ValueError"
+
+
+def test_infra_retry_policy_exhausts_after_max_attempts():
+    calls = 0
+
+    def _task():
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("hub indisponível")
+
+    definition = ExperimentDefinition(
+        name="exhaust-retries",
+        tasks=(TaskDefinition("t1", "Tarefa", retry_policy=INFRA_RETRY_POLICY),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _task}).execute(definition)
+
+    assert run.status == "failed"
+    assert calls == INFRA_RETRY_POLICY.max_attempts
+    assert len(run.tasks[0].attempts) == INFRA_RETRY_POLICY.max_attempts
+
+
+def test_adapt_model_template_uses_infra_retry_policy():
+    """adapt_model declarado pelo template HuggingFace usa INFRA_RETRY_POLICY."""
+    from experiment.workflow_templates import (  # type: ignore
+        HuggingFaceWorkflowConfig,
+        build_huggingface_workflow,
+    )
+
+    config = HuggingFaceWorkflowConfig(name="test-wf")
+    definition = build_huggingface_workflow(config)
+
+    adapt_task = next(t for t in definition.tasks if t.task_id == "adapt_model")
+    assert adapt_task.retry_policy is INFRA_RETRY_POLICY
+
+
+# ---------------------------------------------------------------------------
+# failure_stage — propagação do estágio de falha
+# ---------------------------------------------------------------------------
+
+def test_executor_extracts_failure_stage_from_exception():
+    """Executor preenche failure_stage quando a exceção carrega o atributo."""
+    def _failing_task():
+        exc = RuntimeError("init falhou")
+        exc.failure_stage = "init"  # type: ignore[attr-defined]
+        raise exc
+
+    definition = ExperimentDefinition(
+        name="stage-test",
+        tasks=(TaskDefinition("t1", "Tarefa"),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _failing_task}).execute(definition)
+
+    attempt = run.tasks[0].attempts[0]
+    assert attempt.failure_stage == "init"
+    assert attempt.error_type == "RuntimeError"
+
+
+def test_executor_failure_stage_is_none_when_not_set():
+    """failure_stage fica None quando a exceção não carrega o atributo."""
+    def _failing_task():
+        raise ValueError("erro sem stage")
+
+    definition = ExperimentDefinition(
+        name="no-stage-test",
+        tasks=(TaskDefinition("t1", "Tarefa"),),
+    )
+    run = SequentialWorkflowExecutor({"t1": _failing_task}).execute(definition)
+
+    assert run.tasks[0].attempts[0].failure_stage is None

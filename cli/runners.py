@@ -11,6 +11,7 @@ Autor: Gustavo Alexandre
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,94 @@ from gridsearch.skyband import (
 from .constants import DEFAULT_SLA_PROFILES, DEFAULT_TRAIN_DATASET
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_model_id_for_prewarm(base_config_path: str) -> str:
+    """Resolve o identificador/caminho do backbone BERT definido no config."""
+    from experiment.helpers import load_config
+
+    cfg = load_config(base_config_path)
+    return cfg.get("model", "bert_path", fallback="bert-base-uncased")
+
+
+def _prewarm_huggingface_assets(model_id_or_path: str) -> None:
+    """Pré-carrega tokenizer/modelo no cache local do projeto.
+
+    Isso reduz corrida entre workers no primeiro acesso e evita chamadas de rede
+    durante a inicialização de cada tentativa quando o modo offline estiver ativo.
+    """
+    from transformers import AutoModel, AutoTokenizer
+
+    from utils.paths import PathManager
+
+    logger.info("Prewarm Hugging Face: carregando '%s' no cache local...", model_id_or_path)
+    AutoTokenizer.from_pretrained(
+        model_id_or_path,
+        cache_dir=str(PathManager.HF_HUB_CACHE_DIR),
+    )
+    AutoModel.from_pretrained(
+        model_id_or_path,
+        cache_dir=str(PathManager.HF_HUB_CACHE_DIR),
+    )
+
+
+def _prewarm_huggingface_dataset(
+    dataset_id: str,
+    dataset_config: str | None = None,
+    splits: tuple[str, ...] = ("train", "validation", "test"),
+) -> None:
+    """Pré-carrega todos os splits do dataset HF no cache local antes do modo offline.
+
+    Deve ser chamada ANTES de _enable_hf_offline_mode(). Sem isso, os workers
+    falham instantaneamente em T0 (ingest_dataset) ao tentar chamar load_dataset
+    com HF_HUB_OFFLINE=1 sem cache local disponível.
+    """
+    from datasets import load_dataset
+
+    from utils.paths import PathManager
+
+    cache_dir = str(PathManager.HF_HUB_CACHE_DIR)
+    label = f"{dataset_id}" + (f"/{dataset_config}" if dataset_config else "")
+    logger.info("Prewarm dataset HF: carregando '%s' no cache local...", label)
+    for split in splits:
+        kwargs: dict = {"split": split, "cache_dir": cache_dir}
+        if dataset_config:
+            kwargs["name"] = dataset_config
+        try:
+            load_dataset(dataset_id, **kwargs)
+            logger.info("  split '%s' cacheado.", split)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("  split '%s' indisponível (ignorado): %s", split, exc)
+
+
+def _enable_hf_offline_mode() -> None:
+    """Força execução offline para chamadas da Hugging Face Hub."""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    logger.info("HF_HUB_OFFLINE=1 ativado para execução do grid.")
+
+
+def prewarm_huggingface(
+    base_config_path: str,
+    dataset_overrides: dict[str, str] | None = None,
+    *,
+    strict: bool = True,
+) -> None:
+    """Carrega modelo e dataset HF no cache antes da janela medida pela telemetria.
+
+    Com ``strict=False`` uma falha vira aviso: o download passa a entrar no tempo
+    e na energia de ``ingest_dataset``/``adapt_model``, mas a execução não aborta.
+    """
+    try:
+        _prewarm_huggingface_assets(_resolve_model_id_for_prewarm(base_config_path))
+        if dataset_overrides and dataset_overrides.get("hf_dataset_source") == "hub":
+            _prewarm_huggingface_dataset(
+                dataset_id=dataset_overrides.get("hf_dataset_id", ""),
+                dataset_config=dataset_overrides.get("hf_dataset_config"),
+            )
+    except Exception as exc:
+        if strict:
+            raise
+        logger.warning("Prewarm Hugging Face falhou; downloads podem entrar na medição: %s", exc)
 
 
 def validate_paths(config_path: str, grid_config_path: str | None = None) -> bool:
@@ -51,6 +140,21 @@ def validate_paths(config_path: str, grid_config_path: str | None = None) -> boo
     return True
 
 
+def single_run_context(config_path: str) -> dict:
+    """Contexto do ``experiment_summary`` de uma execução single, no formato do grid.
+
+    Os hiperparâmetros vêm do próprio config, pelo mesmo ``param_mapping.json`` do grid.
+    """
+    from experiment.helpers import execution_context
+    from gridsearch.grid import read_config_hyperparameters
+
+    return {
+        **execution_context(),
+        "parallel_workers": 1,
+        "grid_params": read_config_hyperparameters(config_path),
+    }
+
+
 def run_single_experiment(
     config_path: str,
     train_dataset: str = DEFAULT_TRAIN_DATASET,
@@ -61,7 +165,7 @@ def run_single_experiment(
 ):
     """Executa uma combinação única pelo template workflow T0 -> T2 -> T5."""
     from experiment.helpers import load_config
-    from experiment.persistence import write_workflow_run
+    from experiment.persistence import append_workflow_csv_rows, write_workflow_run
     from experiment.task_executor import SequentialWorkflowExecutor
     from experiment.task_telemetry import TaskTelemetryCollector
     from experiment.workflow import ResourceRequirements
@@ -70,9 +174,11 @@ def run_single_experiment(
         build_launcher_task_functions,
         build_launcher_workflow,
     )
+    from utils.device import get_torch_device
 
     if not validate_paths(config_path):
         raise FileNotFoundError(f"Arquivo de configuração não encontrado: {config_path}")
+    prewarm_huggingface(config_path, strict=False)
     config = LauncherWorkflowConfig(
         name=f"single-{train_dataset}",
         config_path=config_path,
@@ -80,6 +186,7 @@ def run_single_experiment(
         resources=ResourceRequirements(gpu_count=len(gpu_list or []), coupling_degree=0.9 if gpu_list else 0.0),
     )
     monitoring = load_config(config_path).getboolean("monitoring", "enable_monitoring", fallback=False)
+    definition = build_launcher_workflow(config)
     workflow = SequentialWorkflowExecutor(
         build_launcher_task_functions(
             config,
@@ -88,8 +195,14 @@ def run_single_experiment(
             tpu_cores=tpu_cores,
         ),
         telemetry=TaskTelemetryCollector(enable_emissions=monitoring),
-    ).execute(build_launcher_workflow(config))
+    ).execute(definition)
     run_dir = write_workflow_run(workflow)
+    append_workflow_csv_rows(
+        workflow,
+        device_type=get_torch_device()["type"],
+        definition=definition,
+        context=single_run_context(config_path),
+    )
     if workflow.status != "success":
         raise RuntimeError(f"Workflow single falhou. Manifesto: {run_dir}")
     return workflow
@@ -364,6 +477,9 @@ def run_grid_search_experiments(
         sys.exit(1)
     if tpu_cores > 1 and parallel > 1:
         raise ValueError("TPU multicore requer --parallel 1 para evitar spawn aninhado.")
+
+    prewarm_huggingface(base_config_path, dataset_overrides)
+    _enable_hf_offline_mode()
 
     # Carrega configuração da grade
     with open(grid_config_path, 'r', encoding='utf-8') as f:

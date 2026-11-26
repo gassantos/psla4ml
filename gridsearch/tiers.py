@@ -37,8 +37,8 @@ Autor: Gustavo Alexandre
 
 import logging
 import statistics
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Optional
 
 from .dominance import DEFAULT_METRICS, _extract_metric_value
 
@@ -49,11 +49,11 @@ DISCRETIZATION_STRATEGIES = ("median", "mean", "q1", "q3")
 
 
 def compute_thresholds(
-    results: List[Dict[str, Any]],
-    metrics: List[str],
+    results: list[dict[str, Any]],
+    metrics: list[str],
     strategy: str = "median",
-    explicit_thresholds: Optional[Dict[str, float]] = None,
-) -> Dict[str, float]:
+    explicit_thresholds: dict[str, float] | None = None,
+) -> dict[str, float]:
     """Calcula os limiares de discretização para cada métrica.
 
     Os limiares são calculados a partir dos valores observados nos
@@ -88,7 +88,7 @@ def compute_thresholds(
         )
 
     valid_results = [r for r in results if r.get("status") == "success"]
-    thresholds: Dict[str, float] = {}
+    thresholds: dict[str, float] = {}
 
     for metric in metrics:
         values = [
@@ -157,12 +157,12 @@ def _interval_for(value: float, threshold: float) -> str:
 
 
 def discretize_metrics(
-    results: List[Dict[str, Any]],
-    metrics: Optional[List[str]] = None,
-    thresholds: Optional[Dict[str, float]] = None,
+    results: list[dict[str, Any]],
+    metrics: list[str] | None = None,
+    thresholds: dict[str, float] | None = None,
     strategy: str = "median",
-    reference_results: Optional[List[Dict[str, Any]]] = None,
-) -> List[Dict[str, Any]]:
+    reference_results: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Discretiza métricas contínuas em intervalos baseados em limiares.
 
     Implementa o **Passo 9 do Algoritmo 1** do artigo PSLA4ML::
@@ -239,10 +239,10 @@ def discretize_metrics(
             for r in results
         ]
 
-    discretized: List[Dict[str, Any]] = []
+    discretized: list[dict[str, Any]] = []
     for result in results:
         r = dict(result)
-        disc: Dict[str, str] = {}
+        disc: dict[str, str] = {}
         for metric in metrics:
             if metric not in computed:
                 continue
@@ -267,7 +267,7 @@ def discretize_metrics(
 # TRAINING TEMPLATE — Seção 3.1 do artigo PSLA4ML
 # ============================================================================
 
-def _get_arch_string(result: Dict[str, Any]) -> str:
+def _get_arch_string(result: dict[str, Any]) -> str:
     """Extrai o identificador de arquitetura de um resultado.
 
     Hierarquia de busca:
@@ -288,7 +288,7 @@ def _get_arch_string(result: Dict[str, Any]) -> str:
     return ""
 
 
-def _get_dataset_string(result: Dict[str, Any]) -> str:
+def _get_dataset_string(result: dict[str, Any]) -> str:
     """Extrai o identificador do dataset de um resultado.
 
     Hierarquia de busca:
@@ -388,9 +388,9 @@ class TrainingTemplate:
 
     architecture: str = ""
     dataset_id: str = ""
-    fixed_hyperparams: Dict[str, Any] = field(default_factory=dict)
+    fixed_hyperparams: dict[str, Any] = field(default_factory=dict)
 
-    def matches(self, result: Dict[str, Any]) -> bool:
+    def matches(self, result: dict[str, Any]) -> bool:
         """Verifica se um resultado é instância deste template.
 
         Args:
@@ -430,9 +430,9 @@ class TrainingTemplate:
 
 
 def filter_by_template(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     template: "TrainingTemplate",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Filtra resultados para apenas os que correspondem ao TrainingTemplate.
 
     Implementa a noção de Training Template da Seção 3.1 do artigo PSLA4ML:
@@ -504,28 +504,28 @@ class Tier:
     # — Identificação do workflow —
     model: str = ""
     dataset: str = ""
-    learning_rate: Optional[float] = None
-    batch_size: Optional[int] = None
-    optimizer: Optional[str] = None
-    dropout: Optional[float] = None
+    learning_rate: float | None = None
+    batch_size: int | None = None
+    optimizer: str | None = None
+    dropout: float | None = None
     hardware: str = ""
 
     # — Métricas discretizadas (Passo 9) —
-    discretized: Dict[str, str] = field(default_factory=dict)
+    discretized: dict[str, str] = field(default_factory=dict)
 
     # — Valores brutos de referência —
-    raw_metrics: Dict[str, float] = field(default_factory=dict)
+    raw_metrics: dict[str, float] = field(default_factory=dict)
 
     # — Metadados Skyband —
     domination_count: int = 0
     k: int = 1
 
     # — Rastreabilidade —
-    experiment_id: Optional[str] = None
-    grid_experiment_idx: Optional[int] = None
-    selected_environment: Optional[str] = None
+    experiment_id: str | None = None
+    grid_experiment_idx: int | None = None
+    selected_environment: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serializa o Tier para dicionário JSON-compatível."""
         return asdict(self)
 
@@ -534,28 +534,35 @@ class Tier:
 # HELPERS DE EXTRAÇÃO — lêem campos dos dicts de resultado do grid search
 # ============================================================================
 
-def _extract_hardware(result: Dict[str, Any]) -> str:
+def _extract_hardware(result: dict[str, Any]) -> str:
     """Extrai o tipo de hardware do resultado.
 
     Hierarquia de busca:
     1. ``result["environment"]["device_type"]`` (produção, via ``build_result_dict``)
-    2. ``result["selected_environment"]`` (nome do ambiente do multienv grid)
-    3. ``result["grid_params"]["environment"]`` (chave adicionada pelo ``generate_parameter_grid``)
-    4. String vazia como fallback.
+    2. ``result["resource_machine_name"]`` (recurso medido no host atual)
+    3. ``result["selected_environment"]`` (compatibilidade legada)
+    4. ``result["configured_environment"]`` ou ``result["grid_params"]["environment"]``
+    5. String vazia como fallback.
     """
     env = result.get("environment", {})
     if isinstance(env, dict) and env.get("device_type"):
         return str(env["device_type"]).lower()
+    machine = result.get("resource_machine_name")
+    if machine:
+        return str(machine).lower()
     se = result.get("selected_environment")
     if se:
         return str(se).lower()
+    configured = result.get("configured_environment")
+    if configured:
+        return str(configured).lower()
     gp = result.get("grid_params", {})
     if isinstance(gp, dict) and gp.get("environment"):
         return str(gp["environment"]).lower()
     return ""
 
 
-def _extract_hyperparam(result: Dict[str, Any], key: str, aliases: List[str]) -> Any:
+def _extract_hyperparam(result: dict[str, Any], key: str, aliases: list[str]) -> Any:
     """Extrai um hiperparâmetro de um resultado, tentando múltiplos caminhos.
 
     Busca em:
@@ -579,7 +586,7 @@ def _extract_hyperparam(result: Dict[str, Any], key: str, aliases: List[str]) ->
     return None
 
 
-def _extract_raw_metrics(result: Dict[str, Any], metrics: List[str]) -> Dict[str, float]:
+def _extract_raw_metrics(result: dict[str, Any], metrics: list[str]) -> dict[str, float]:
     """Extrai os valores brutos das métricas de um resultado."""
     return {
         m: v
@@ -589,11 +596,11 @@ def _extract_raw_metrics(result: Dict[str, Any], metrics: List[str]) -> Dict[str
 
 
 def _build_tier(
-    result: Dict[str, Any],
+    result: dict[str, Any],
     k: int,
     model: str,
     dataset: str,
-    metrics: List[str],
+    metrics: list[str],
 ) -> "Tier":
     """Constrói um Tier a partir de um resultado enriquecido com 'discretized'."""
     lr_raw = _extract_hyperparam(result, "learning_rate", ["lr"])
@@ -632,17 +639,17 @@ def _build_tier(
 # ============================================================================
 
 def generate_psla4ml(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     k: int = 1,
-    metrics: Optional[List[str]] = None,
-    thresholds: Optional[Dict[str, float]] = None,
+    metrics: list[str] | None = None,
+    thresholds: dict[str, float] | None = None,
     strategy: str = "median",
-    sla_constraints: Optional[Dict[str, float]] = None,
+    sla_constraints: dict[str, float] | None = None,
     model: str = "BERT-PLI",
     dataset: str = "COLLIE",
     template: Optional["TrainingTemplate"] = None,
     include_quality_metrics: bool = False,
-) -> List["Tier"]:
+) -> list["Tier"]:
     """Gera os tiers do PSLA4ML executando o Algoritmo 1 do artigo.
 
     Implementa os passos 4–10 do Algoritmo 1 (Seção 3.2):
@@ -711,12 +718,13 @@ def generate_psla4ml(
             print(t.hardware, t.domination_count, t.discretized)
     """
     from .dominance import (
-        skyband_query, QUALITY_METRICS, QUALITY_MINIMIZE, _get_minimize_flag,
+        QUALITY_METRICS,
+        _get_minimize_flag,
+        skyband_query,
     )
 
     if metrics is None:
         if include_quality_metrics:
-            from .dominance import DEFAULT_METRICS, DEFAULT_MINIMIZE
             metrics = DEFAULT_METRICS[:] + QUALITY_METRICS[:]
         else:
             metrics = DEFAULT_METRICS[:]
@@ -761,7 +769,7 @@ def generate_psla4ml(
         reference_results=results,   # limiares calculados sobre TODO o conjunto
     )
 
-    tiers: List[Tier] = [
+    tiers: list[Tier] = [
         _build_tier(r, k=k, model=model, dataset=dataset, metrics=metrics)
         for r in disc_results
     ]

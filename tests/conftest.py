@@ -1,9 +1,26 @@
 """
 Fixtures compartilhadas para os testes unitários do projeto Gridsearch.
 """
-import pytest
-import torch.nn as nn
 from unittest.mock import MagicMock
+
+import pytest
+from torch import nn
+
+
+@pytest.fixture(autouse=True)
+def isolated_metrics_dir(tmp_path, monkeypatch):
+    """Isola o diretório de métricas: nenhum teste grava CSVs no ``output/`` real.
+
+    ``task_telemetry`` resolve ``METRICS_DIR`` no próprio módulo; sem isto, qualquer
+    teste com o CodeCarbon real poluiria o emissions CSV consolidado.
+    """
+    from experiment import persistence, task_telemetry
+
+    metrics_dir = tmp_path / "metrics"
+    metrics_dir.mkdir()
+    monkeypatch.setattr(persistence, "METRICS_DIR", metrics_dir)
+    monkeypatch.setattr(task_telemetry, "METRICS_DIR", metrics_dir)
+    return metrics_dir
 
 
 # ---------------------------------------------------------------------------

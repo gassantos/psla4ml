@@ -150,11 +150,7 @@ class TestGenerateParameterGrid:
 
         expected = config["_meta"]["total_combinations"]["with_environments"]
         assert len(combos) == expected
-        assert all("environment" in combo for combo in combos)
-
-        active_envs = set(config["environments"]["active"])
-        combo_envs = {combo["environment"] for combo in combos}
-        assert combo_envs == active_envs
+        assert all("environment" not in combo for combo in combos)
 
 
 # ---------------------------------------------------------------------------

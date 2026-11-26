@@ -20,11 +20,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from experiment.workflow import classify_error_type
 from utils.device import get_torch_device
 from utils.log_setup import get_log_queue, setup_worker_logging
 from utils.paths import PathManager
 
-from .grid import create_config_for_combination, generate_parameter_grid
+from .grid import (
+    create_config_for_combination,
+    generate_parameter_grid,
+    read_config_hyperparameters,
+)
 from .sla_prefilter import prefilter_param_grid_by_execution_sla
 from .utils import check_memory_availability, ensure_output_directories
 
@@ -137,8 +142,8 @@ def _build_huggingface_workflow_config(
     tpu_cores: int,
 ):
     """Monta a configuração comum ao metadata e à execução da combinação."""
-    from experiment.workflow_templates import HuggingFaceWorkflowConfig
     from experiment.workflow import ResourceRequirements
+    from experiment.workflow_templates import HuggingFaceWorkflowConfig
 
     overrides = dict(dataset_overrides or {})
     details = dict(environment_details or {})
@@ -175,27 +180,53 @@ def _project_workflow_result(
     experiment_idx: int,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    """Projeta o resultado T0-T2-T5 no schema histórico do grid search."""
+    """Projeta o workflow no estado do grid sem perder telemetria por tarefa."""
     from experiment.aggregation import aggregate_workflow_run
 
     adapt = next(task for task in workflow_run.tasks if task.task_id == "adapt_model")
     adapt_metrics = adapt.attempts[-1].metrics if adapt.attempts else {}
+    adapt_resources = adapt_metrics.get("resources", {})
+    if not isinstance(adapt_resources, dict):
+        adapt_resources = {}
     legacy_result = adapt_metrics.get("legacy_result", {})
     result = dict(legacy_result) if isinstance(legacy_result, dict) else {}
     summary = aggregate_workflow_run(workflow_run, definition)
+    resources = {**adapt_resources, **summary["resources"]}
+    resources["train_time_sec"] = adapt_resources.get(
+        "task_time_sec", summary["resources"].get("task_time_sec")
+    )
     result["experiment"] = result.get("experiment", {
         "id": workflow_run.experiment_run_id,
         "status": workflow_run.status,
     })
-    result["resources"] = adapt_metrics.get("resources", summary["resources"])
+    result["resources"] = resources
     result["evaluation"] = summary["evaluation"]
     result["grid_params"] = params
     result["grid_experiment_idx"] = experiment_idx
     result["workflow"] = asdict(definition)
+    result["task_telemetry"] = _task_telemetry(workflow_run, definition)
     result["workflow_run_dir"] = str(workflow_run_dir)
     result["workflow_summary"] = summary
     result["status"] = "success" if workflow_run.status == "success" else "failed"
     return result
+
+
+def _task_telemetry(workflow_run, definition) -> list[dict[str, Any]]:
+    """Serializa tentativas e sua atividade canônica para o estado do grid."""
+    definitions = {task.task_id: task for task in definition.tasks}
+    telemetry: list[dict[str, Any]] = []
+    for task_run in workflow_run.tasks:
+        task_definition = definitions[task_run.task_id]
+        telemetry.append({
+            "task_id": task_run.task_id,
+            "name": task_run.name,
+            "task_type": task_run.task_type,
+            "activity": task_definition.activity.value,
+            "regime": task_definition.regime.value,
+            "status": task_run.status.value,
+            "attempts": [asdict(attempt) for attempt in task_run.attempts],
+        })
+    return telemetry
 
 
 # ============================================================================
@@ -238,8 +269,14 @@ def run_single_experiment(
         Dicionário com resultados do experimento
     """
     # Imports lazy evitam inicialização de CUDA no processo principal.
-    from experiment.helpers import load_config
-    from experiment.persistence import write_workflow_run
+    from experiment.helpers import (
+        detect_execution_environment,
+        execution_context,
+        get_machine_name,
+        load_config,
+        normalize_environment_label,
+    )
+    from experiment.persistence import append_workflow_csv_rows, write_workflow_run
     from experiment.task_executor import SequentialWorkflowExecutor
     from experiment.task_telemetry import TaskTelemetryCollector
     from experiment.workflow_templates import (
@@ -248,6 +285,9 @@ def run_single_experiment(
     )
 
     logger.info(f"[{experiment_idx}] Iniciando experimento com parâmetros: {params}")
+    requested_environment = normalize_environment_label(params.get("environment")) if params.get("environment") else None
+    configured_environment = detect_execution_environment()
+    machine_name = get_machine_name()
     workflow_config = _build_huggingface_workflow_config(
         experiment_idx,
         params,
@@ -279,6 +319,17 @@ def run_single_experiment(
             ),
         ).execute(definition)
         workflow_run_dir = write_workflow_run(workflow_run)
+        append_workflow_csv_rows(
+            workflow_run,
+            device_type=_get_device_type(),
+            definition=definition,
+            context={
+                **execution_context(),
+                # O config da combinação traz o valor efetivo de todos os hiperparâmetros, não só os da grade.
+                "grid_params": {**read_config_hyperparameters(config_path), **params},
+                "parallel_workers": parallel_workers,
+            },
+        )
         result_data = _project_workflow_result(
             workflow_run,
             definition,
@@ -287,8 +338,11 @@ def run_single_experiment(
             params=params,
         )
         result_data["parallel_workers"] = parallel_workers
-        if "environment" in params:
-            result_data["selected_environment"] = params["environment"]
+        result_data["selected_environment"] = machine_name
+        result_data["resource_machine_name"] = machine_name
+        result_data["configured_environment"] = configured_environment
+        if requested_environment is not None:
+            result_data["requested_environment"] = requested_environment
         if workflow_run.status != "success":
             raise RuntimeError("Workflow T0-T2-T5 falhou.")
 
@@ -303,6 +357,11 @@ def run_single_experiment(
             "grid_experiment_idx": experiment_idx,
             "grid_params": params,
             "status": "failed",
+            "selected_environment": machine_name,
+            "resource_machine_name": machine_name,
+            "configured_environment": configured_environment,
+            "requested_environment": requested_environment,
+            "error_type": classify_error_type(e),
             "error": str(e),
             "traceback": traceback.format_exc(),
             "workflow": asdict(build_huggingface_workflow(workflow_config)),
@@ -380,7 +439,7 @@ def run_grid_search(
     # antes de qualquer experimento ser executado. Alimenta gridsearch.
     # milp_instance como um arquivo já pronto para leitura (sem heurística
     # embutida no leitor da instância MILP).
-    env_details = grid_config.get("environments", {}).get("details")
+    env_details = grid_config.get("environments", {}).get("details") # type: ignore
     if env_details:
         from .resource_discovery import collect_and_persist_resource_catalog
 
@@ -542,7 +601,7 @@ def run_grid_search(
                         output_dir=output_dir,
                     )
 
-                    completed_eligible = len(completed_experiments.intersection(eligible_idx))
+                    completed_eligible = len(completed_experiments.intersection(eligible_idx)) # type: ignore
                     logger.info(f"Progresso: {completed_eligible}/{total_experiments}")
 
                 except Exception as e:
@@ -571,7 +630,7 @@ def run_grid_search(
                 output_dir=output_dir,
             )
 
-            completed_eligible = len(completed_experiments.intersection(eligible_idx))
+            completed_eligible = len(completed_experiments.intersection(eligible_idx)) # type: ignore
             logger.info(f"Progresso: {completed_eligible}/{total_experiments}")
 
     return all_results

@@ -7,10 +7,11 @@ Usado por ``experiment/`` para registrar o contexto de hardware
 no início de cada experimento e pelo módulo ``utils.device`` para
 detecção do dispositivo de cómputo.
 """
-import platform
-import psutil
-from datetime import datetime
 import logging
+import platform
+from datetime import datetime
+
+import psutil
 
 logger = logging.getLogger(__name__)
 

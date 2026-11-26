@@ -14,13 +14,13 @@ def gen_time_str(t):
     t = int(t)
     minute = t // 60
     second = t % 60
-    return '%2d:%02d' % (minute, second)
+    return '%2d:%02d' % (minute, second)  # noqa: UP031
 
 
 def output_value(epoch, mode, step, time, loss, info, end, config):
     try:
         delimiter = config.get("output", "delimiter")
-    except Exception:
+    except Exception:  # noqa: BLE001
         delimiter = " "
     s = ""
     s = s + str(epoch) + " "
@@ -47,7 +47,7 @@ def output_value(epoch, mode, step, time, loss, info, end, config):
 
 
 def eval_micro_query(_result_list):
-    label_dict = defaultdict(lambda: [])
+    label_dict = defaultdict(list)
     pred_dict = defaultdict(lambda: defaultdict(lambda: 0))
     pair_correct = 0
     total_pairs = len(_result_list)
@@ -56,12 +56,14 @@ def eval_micro_query(_result_list):
         label = int(item[1])
         pred = np.argmax(item[2])
         qid, cid = guid.split('_')
-        # if label > 0:
-        label_dict[qid].append(cid)
-        pred_dict[qid][cid] = pred
+        if label > 0:
+            label_dict[qid].append(cid)
+        pred_dict[qid][cid] = pred # type: ignore
         if pred == label:
             pair_correct += 1
-    assert (len(pred_dict) == len(label_dict))
+
+    # Nem toda query terá necessariamente exemplos positivos no split atual.
+    # Nesses casos, ela existe em pred_dict mas pode não existir em label_dict.
 
     correct = 0
     label = 0
@@ -106,7 +108,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
     result = []
 
     for step, data in enumerate(dataset):
-        for key in data.keys():
+        for key in data:
             if isinstance(data[key], torch.Tensor):
                 data[key] = data[key].to(device)
 
@@ -114,13 +116,12 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
         loss, acc_result, output = results["loss"], results["acc_result"], results["output"]
         total_loss += loss.detach().item()
         result = result + output
-        cnt += 1
+        cnt += 1  # noqa: SIM113
 
         if step % output_time == 0:
             delta_t = timer() - start_time
 
-            output_value(epoch, mode, "%d/%d" % (step + 1, total_len), "%s/%s" % (
-                gen_time_str(delta_t), gen_time_str(delta_t * (total_len - step - 1) / (step + 1))),
+            output_value(epoch, mode, "%d/%d" % (step + 1, total_len), f"{gen_time_str(delta_t)}/{gen_time_str(delta_t * (total_len - step - 1) / (step + 1))}",
                          "%.3lf" % (total_loss / (step + 1)), output_info, '\r', config)
 
     if step == -1:
@@ -129,8 +130,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
 
     delta_t = timer() - start_time
     output_info = output_function(acc_result, config)
-    output_value(epoch, mode, "%d/%d" % (step + 1, total_len), "%s/%s" % (
-        gen_time_str(delta_t), gen_time_str(delta_t * (total_len - step - 1) / (step + 1))),
+    output_value(epoch, mode, "%d/%d" % (step + 1, total_len), f"{gen_time_str(delta_t)}/{gen_time_str(delta_t * (total_len - step - 1) / (step + 1))}",
                  "%.3lf" % (total_loss / (step + 1)), output_info, None, config)
 
     writer.add_scalar(config.get("output", "model_name") + "_eval_epoch", float(total_loss) / (step + 1),
@@ -139,8 +139,7 @@ def valid(model, dataset, epoch, writer, config, gpu_list, output_function, mode
     # eval results based on query micro F1
     micro_prec_query, micro_recall_query, micro_f1_query, accuracy = eval_micro_query(result)
     loss_tmp = total_loss / (step + 1)
-    print('valid set: micro_prec_query=%.4f, micro_recall_query=%.4f, micro_f1_query=%.4f, accuracy=%.4f' %
-          (micro_prec_query, micro_recall_query, micro_f1_query, accuracy))
+    print(f'valid set: micro_prec_query={micro_prec_query:.4f}, micro_recall_query={micro_recall_query:.4f}, micro_f1_query={micro_f1_query:.4f}, accuracy={accuracy:.4f}')
     model.train()
     return {'precision': micro_prec_query, 'recall': micro_recall_query, 'f1': micro_f1_query,
             'accuracy': accuracy, 'loss': loss_tmp}
@@ -159,8 +158,9 @@ def parse_gru_results(input_file: str, output_file: str) -> None:
         input_file: Arquivo JSON com resultados brutos do GRU/LSTM
         output_file: Arquivo JSON de saída no formato task1
     """
-    from pathlib import Path as _Path
     import json as _json
+    from pathlib import Path as _Path
+
     from utils.paths import PathManager
 
     output_path = _Path(output_file)
@@ -191,8 +191,8 @@ def parse_gru_results(input_file: str, output_file: str) -> None:
                 result[query_file] = []
             result[query_file].append(f"{doc}.txt")
 
-    for key in result:
-        result[key] = sorted(set(result[key]))
+    for key, value in result.items():
+        result[key] = sorted(set(value))
 
     PathManager.ensure_dir(output_path.parent)
     with open(output_file, "w") as f:
@@ -234,7 +234,7 @@ def compute_metrics(labels_file: str, predicted_file: str, k_values: list = None
 
     # Normaliza chaves (remove .txt)
     def _norm(key: str) -> str:
-        return key[:-4] if key.endswith(".txt") else key
+        return key.removesuffix(".txt")
 
     labels = {_norm(k): [_norm(v) for v in vs] for k, vs in labels.items()}
     predicted = {_norm(k): [_norm(v) for v in vs] for k, vs in predicted.items()}
@@ -310,8 +310,8 @@ def evaluate_predictions(
     Returns:
         Dicionário com todas as métricas calculadas
     """
-    from pathlib import Path as _Path
     import json as _json
+    from pathlib import Path as _Path
 
     print("Avaliando predições...")
     print(f"  Ground truth : {labels_file}")
@@ -410,6 +410,6 @@ def convert_test_results_to_task1(test_results_file: str) -> dict:
                 result[query_file] = []
             result[query_file].append(f"{doc}.txt")
 
-    for key in result:
-        result[key] = sorted(set(result[key]))
+    for key, value in result.items():
+        result[key] = sorted(set(value))
     return result

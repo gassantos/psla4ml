@@ -45,6 +45,23 @@ def _load_param_mapping() -> Dict[str, Dict[str, str]]:
     return data.get("mapping", {})
 
 
+def read_config_hyperparameters(config_path: str | Path) -> Dict[str, str]:
+    """Valores efetivos dos hiperparâmetros mapeados, lidos de um config.
+
+    Inclui também os que não variam na grade (ex.: ``seed``, ``dropout``); os ausentes
+    no config ficam de fora. Os valores são texto, como no ``ConfigParser``.
+    """
+    from experiment.helpers import load_config
+
+    config = load_config(str(config_path))
+    values: Dict[str, str] = {}
+    for name, target in _load_param_mapping().items():
+        value = config.get(target["section"], target.get("key", name), fallback="").strip()
+        if value:
+            values[name] = value
+    return values
+
+
 # ============================================================================
 # FILTRAGEM E VALIDAÇÃO DE CONFIGURAÇÃO DE GRID
 # ============================================================================

@@ -11,13 +11,10 @@ Coberturas:
 """
 
 import json
+
 import pytest
-import numpy as np
-import tempfile
-import os
 
-from tools.eval_tool import eval_micro_query, compute_metrics
-
+from tools.eval_tool import compute_metrics, eval_micro_query
 
 # ---------------------------------------------------------------------------
 # Testes para eval_micro_query
@@ -77,6 +74,51 @@ class TestEvalMicroQuery:
         ]
         _, _, _, accuracy = eval_micro_query(items)
         assert isinstance(accuracy, float)
+
+    def test_false_positive_lowers_precision(self):
+        """Precisão deve ser < 1 quando um negativo é predito como positivo."""
+        items = [
+            self._make_item("q1_c1", label=1, score_class1=0.9),  # TP
+            self._make_item("q1_c2", label=0, score_class1=0.8),  # FP
+        ]
+        prec, _, _, _ = eval_micro_query(items)
+        assert prec < 1.0, "FP presente → precisão deve ser < 1.0"
+        assert prec == pytest.approx(0.5)  # 1 TP / 2 predicted
+
+    def test_false_negative_lowers_recall(self):
+        """Recall deve ser < 1 quando um positivo não é recuperado."""
+        items = [
+            self._make_item("q1_c1", label=1, score_class1=0.9),  # TP
+            self._make_item("q1_c2", label=1, score_class1=0.1),  # FN
+        ]
+        _, rec, _, _ = eval_micro_query(items)
+        assert rec < 1.0, "FN presente → recall deve ser < 1.0"
+        assert rec == pytest.approx(0.5)  # 1 TP / 2 positivos reais
+
+    def test_perfect_precision_and_recall(self):
+        """P=R=F1=1 apenas quando não há FP nem FN."""
+        items = [
+            self._make_item("q1_c1", label=1, score_class1=0.9),  # TP
+            self._make_item("q1_c2", label=0, score_class1=0.1),  # TN
+        ]
+        prec, rec, f1, _ = eval_micro_query(items)
+        assert prec == pytest.approx(1.0)
+        assert rec == pytest.approx(1.0)
+        assert f1 == pytest.approx(1.0)
+
+    def test_query_with_only_negative_pairs_does_not_crash(self):
+        """Queries sem rótulo positivo não devem disparar AssertionError."""
+        items = [
+            self._make_item("q1_c1", label=1, score_class1=0.9),
+            self._make_item("q1_c2", label=0, score_class1=0.1),
+            self._make_item("q2_c1", label=0, score_class1=0.2),
+            self._make_item("q2_c2", label=0, score_class1=0.3),
+        ]
+        prec, rec, f1, acc = eval_micro_query(items)
+        assert 0.0 <= prec <= 1.0
+        assert 0.0 <= rec <= 1.0
+        assert 0.0 <= f1 <= 1.0
+        assert 0.0 <= acc <= 1.0
 
 
 # ---------------------------------------------------------------------------

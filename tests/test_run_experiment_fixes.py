@@ -8,6 +8,7 @@ Coberturas:
 """
 
 import os
+
 import pytest
 
 
@@ -71,12 +72,15 @@ class TestComputeCostUsd:
         monkeypatch.setenv("ENERGY_COST_USD_PER_KWH", "0.20")
         # Força reload da constante no módulo após alteração do env var
         import importlib
+
         import experiment.helpers as _helpers
         importlib.reload(_helpers)
         from experiment.helpers import compute_cost_usd as _fn
         result = _fn(energy_kwh=0.5)
         assert result == pytest.approx(0.5 * 0.20, rel=1e-6)
-        importlib.reload(_helpers)  # restaura estado para outros testes
+        # Recarrega novamente com o ambiente padrão para não vazar estado.
+        monkeypatch.delenv("ENERGY_COST_USD_PER_KWH", raising=False)
+        importlib.reload(_helpers)
 
     def test_flat_rate_none_energy(self):
         """energy_kwh=None sem ambiente → retorna None."""

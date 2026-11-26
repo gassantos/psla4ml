@@ -40,9 +40,11 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import psutil
+
+from experiment.helpers import normalize_environment_label
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +116,7 @@ def detect_local_tpu() -> int:
         Número de núcleos de TPU detectados (0 se ausente).
     """
     try:
-        import torch_xla.runtime as xr
+        import torch_xla.runtime as xr  # type: ignore
 
         world_size = xr.world_size()
         return int(world_size) if world_size else 0
@@ -206,7 +208,7 @@ CLOUD_CPU_CORES_BY_LABEL_HINT: dict[str, int] = {
 DEFAULT_CLOUD_CPU_CORES = 4
 
 
-def _estimate_cloud_cpu_cores(label: Optional[str]) -> int:
+def _estimate_cloud_cpu_cores(label: str | None) -> int:
     """Estima vCPUs de um recurso de nuvem a partir do texto de `label` (catálogo do provedor)."""
     if not label:
         return DEFAULT_CLOUD_CPU_CORES
@@ -232,7 +234,7 @@ TPU_CATALOG: dict[str, dict[str, float]] = {
 }
 
 
-def _match_gpu_catalog(gpu_name: Optional[str]) -> Optional[dict[str, float]]:
+def _match_gpu_catalog(gpu_name: str | None) -> dict[str, float] | None:
     """Casa o nome de GPU declarado/detectado com uma entrada do catálogo estático.
 
     Tolera variantes de nome (ex.: ``torch`` reporta "NVIDIA GeForce RTX 2050",
@@ -262,7 +264,7 @@ def build_resource_spec(
     env_name: str,
     env_details: dict[str, Any],
     *,
-    local_hardware: Optional[LocalHardwareSpec] = None,
+    local_hardware: LocalHardwareSpec | None = None,
     processor_types: tuple[str, ...] = DEFAULT_PROCESSOR_TYPES,
 ) -> dict[str, Any]:
     """Monta a especificação de recurso ``i`` para o modelo MILP PSLA4ML.
@@ -352,7 +354,7 @@ def build_resource_spec(
 def estimate_energy_rate_kwh_per_hour(
     results: list[dict[str, Any]],
     environment: str,
-) -> Optional[float]:
+) -> float | None:
     """Estima ``e_i`` (consumo energético por hora) empiricamente a partir do histórico.
 
     Usa a média de ``energy_kwh / (train_time_sec / 3600)`` entre os
@@ -373,8 +375,12 @@ def estimate_energy_rate_kwh_per_hour(
     for r in results:
         if r.get("status") != "success":
             continue
-        env = r.get("selected_environment") or r.get("grid_params", {}).get("environment")
-        if env != environment:
+        env = (
+            r.get("configured_environment")
+            or r.get("grid_params", {}).get("environment")
+            or r.get("selected_environment")
+        )
+        if normalize_environment_label(str(env)) != normalize_environment_label(str(environment)):
             continue
         resources = r.get("resources", {})
         try:
@@ -394,8 +400,8 @@ def estimate_energy_rate_kwh_per_hour(
 def build_resource_catalog(
     environments_details: dict[str, dict[str, Any]],
     *,
-    results: Optional[list[dict[str, Any]]] = None,
-    local_hardware: Optional[LocalHardwareSpec] = None,
+    results: list[dict[str, Any]] | None = None,
+    local_hardware: LocalHardwareSpec | None = None,
     processor_types: tuple[str, ...] = DEFAULT_PROCESSOR_TYPES,
 ) -> dict[str, dict[str, Any]]:
     """Monta o catálogo completo de recursos ``R`` para o modelo MILP PSLA4ML.
@@ -486,7 +492,7 @@ PROVIDER_BY_ENV_NAME_HINT: dict[str, str] = {
 REFERENCE_TRANSFER_GB = 0.44
 
 
-def _infer_provider(env_name: str, env_details: Optional[dict[str, Any]] = None) -> str:
+def _infer_provider(env_name: str, env_details: dict[str, Any] | None = None) -> str:
     """Infere o provedor de infraestrutura de um recurso.
 
     Prioriza ``env_details["provider"]`` quando declarado explicitamente;
@@ -500,7 +506,7 @@ def _infer_provider(env_name: str, env_details: Optional[dict[str, Any]] = None)
 def communication_cost_matrix(
     resource_ids: list[str],
     *,
-    environments_details: Optional[dict[str, dict[str, Any]]] = None,
+    environments_details: dict[str, dict[str, Any]] | None = None,
     reference_transfer_gb: float = REFERENCE_TRANSFER_GB,
 ) -> dict[tuple[str, str], float]:
     """Monta a matriz ``c_ij`` de custo de comunicação entre recursos.
@@ -543,8 +549,8 @@ def collect_and_persist_resource_catalog(
     environments_details: dict[str, dict[str, Any]],
     output_path: str | Path,
     *,
-    results: Optional[list[dict[str, Any]]] = None,
-    local_hardware: Optional[LocalHardwareSpec] = None,
+    results: list[dict[str, Any]] | None = None,
+    local_hardware: LocalHardwareSpec | None = None,
     processor_types: tuple[str, ...] = DEFAULT_PROCESSOR_TYPES,
     reference_transfer_gb: float = REFERENCE_TRANSFER_GB,
 ) -> Path:

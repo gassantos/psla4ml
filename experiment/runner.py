@@ -20,9 +20,11 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from warnings import filterwarnings
 
-import psutil
+import psutil  # type: ignore
 import torch
+from codecarbon import EmissionsTracker  # type: ignore
 
 from gridsearch.protocols import (
     ComputeMetricsFn,
@@ -42,6 +44,7 @@ from tools.eval_tool import (
 from utils.device import get_torch_device
 from utils.util import print_system_info
 
+from .bootstrap_lock import BootstrapLock
 from .evaluation import extract_eval_metrics
 from .helpers import (
     TeeStream,
@@ -51,20 +54,14 @@ from .helpers import (
     now_iso,
 )
 from .persistence import (
-    append_csv_row,
+    append_workflow_csv_rows,
     build_result_dict,
+    legacy_result_context,
     write_json_result,
     write_workflow_run,
 )
 from .tpu_check import check_tpu_acceleration
 from .workflow import legacy_task_run
-
-try:
-    from codecarbon import EmissionsTracker
-except ImportError:
-    EmissionsTracker = None
-
-from warnings import filterwarnings
 
 filterwarnings("ignore", category=UserWarning)
 
@@ -86,6 +83,7 @@ def execute_experiment(
     compute_metrics_fn: ComputeMetricsFn | None = None,
     xla_rank: int | None = None,
     xla_world_size: int = 1,
+    collect_resource_telemetry: bool = True,
 ) -> dict | None:
     """Executa um experimento completo de forma rastreável.
 
@@ -110,6 +108,8 @@ def execute_experiment(
         compute_metrics_fn: Callable compatível com ``ComputeMetricsFn``.
         xla_rank: Rank PJRT do worker atual; ``None`` fora do launcher XLA.
         xla_world_size: Quantidade de workers PJRT usados pelo experimento.
+        collect_resource_telemetry: Quando ``False``, delega a coleta ao
+            ``TaskTelemetryCollector`` da tarefa que encapsula o runner.
     """
     import tempfile as _tempfile
 
@@ -165,15 +165,26 @@ def execute_experiment(
     start_iso = now_iso()
     DATE_EXEC = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
 
+    # Water Usage Efficiency (WUE) references:
+    #  - https://introl.com/pt/blog/water-usage-efficiency-wue-ai-data-center-cooling-guide-2025
+    #  - https://claritytreinamentos.com.br/wue-efetividade-no-uso-da-agua/
+
     # -------- ENERGY TRACKER --------
     tracker = None
-    if is_primary_process and EmissionsTracker and mon.getboolean("enable_monitoring"):
+    if (
+        collect_resource_telemetry
+        and is_primary_process
+        and EmissionsTracker
+        and mon.getboolean("enable_monitoring")
+    ):
         from .helpers import METRICS_DIR
         tracker = EmissionsTracker(
             project_name=exp["name"],
+            measure_power_secs=3,
             output_dir=METRICS_DIR.as_posix(),
             log_level="error",
-            output_file=f"EmissionsCO2_{device_type}_{datetime.now().astimezone().strftime('%Y%m%d')}.csv"
+            output_file=f"EmissionsCO2_{device_type}_{datetime.now().astimezone().strftime('%Y%m%d')}.csv",
+            wue=0.50,
         )
         tracker.start()
 
@@ -209,25 +220,33 @@ def execute_experiment(
                 break
             _stop_ram.wait(timeout=1.0)
 
-    ram_thread = threading.Thread(target=_sample_ram, daemon=True)
-    ram_thread.start()
+    ram_thread = threading.Thread(target=_sample_ram, daemon=True) if collect_resource_telemetry else None
+    if ram_thread:
+        ram_thread.start()
 
     status = "failed"
     stdout = ""
     stderr = ""
     output_lines: list = []
+    _failure_stage: str | None = None
 
     try:
+        _failure_stage = "create_config"
         config = create_config(config_path)
-        parameters = init_fn(config, gpu_list, None, "train")
+        _failure_stage = "init"
+        with BootstrapLock():
+            parameters = init_fn(config, gpu_list, None, "train")
+        _failure_stage = "train"
         train_fn(parameters, config, gpu_list)
         status = "success"
+        _failure_stage = None
     except Exception as exc:
-        logger.error("Treinamento falhou: %s", exc, exc_info=True)  # noqa: G201
+        logger.error("Treinamento falhou em %s: %s", _failure_stage, exc, exc_info=True)  # noqa: G201
         stderr = str(exc)
     finally:
-        _stop_ram.set()
-        ram_thread.join(timeout=5)
+        if ram_thread:
+            _stop_ram.set()
+            ram_thread.join(timeout=5)
         sys.stdout = tee.original
         output_lines = tee.lines
         stdout = "".join(output_lines)
@@ -250,16 +269,54 @@ def execute_experiment(
     # -------- STOP ENERGY TRACKER --------
     emissions_kg = None
     energy_kwh = None
+    water_litter = None
+    energy_source = "unavailable"
+    water_source = "unavailable"
 
     if tracker:
         emissions_kg = tracker.stop()
         try:
-            if hasattr(tracker, 'final_emissions_data') and tracker.final_emissions_data is not None:
-                energy_kwh = tracker.final_emissions_data.energy_consumed
-            elif hasattr(tracker, '_total_energy') and tracker._total_energy is not None:
-                energy_kwh = tracker._total_energy.kWh
+            final_data = getattr(tracker, "final_emissions_data", None)
+            energy_kwh = getattr(final_data, "energy_consumed", None)
+            water_litter = getattr(final_data, "water_consumed", None)
+            if energy_kwh is not None:
+                energy_source = "final_emissions_data.energy_consumed"
+            if water_litter is not None:
+                water_source = "final_emissions_data.water_consumed"
+            if energy_kwh is None:
+                total_energy = getattr(tracker, "_total_energy", None)
+                energy_kwh = getattr(total_energy, "kWh", None)
+                if energy_kwh is not None:
+                    energy_source = "_total_energy.kWh"
+            if water_litter is None:
+                total_water = getattr(tracker, "_total_water", None)
+                water_litter = getattr(total_water, "litres", None)
+                if water_litter is not None:
+                    water_source = "_total_water.litres"
         except Exception as e:  # noqa: BLE001
-            logger.warning("Não foi possível obter energy_kwh do tracker: %s", e)
+            logger.warning("Não foi possível obter métricas de energia/água do tracker: %s", e)
+        logger.info(
+            "Diagnóstico CodeCarbon | monitoring=%s | tracker=%s | energy_kwh=%s (%s) | water_litter=%s (%s)",
+            mon.get("enable_monitoring"),
+            type(tracker).__name__,
+            energy_kwh,
+            energy_source,
+            water_litter,
+            water_source,
+        )
+        try:
+            water_value = float(water_litter) if water_litter is not None else None
+            energy_value = float(energy_kwh) if energy_kwh is not None else None
+            if water_value in (None, 0.0):
+                logger.warning(
+                    "Consumo hídrico não disponível ou zerado para esta execução. "
+                    "Fonte água: %s | Fonte energia: %s | energy_kwh=%s",
+                    water_source,
+                    energy_source,
+                    energy_value,
+                )
+        except (TypeError, ValueError):
+            logger.warning("Valor de consumo hídrico inválido recebido do tracker: %r", water_litter)
 
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -286,15 +343,24 @@ def execute_experiment(
         try:
             with open(profiling_path, "r") as f:
                 profiling_data = json.load(f)
-                total_gflops = profiling_data.get("total_gflops", 0)
                 avg_gflops_per_batch = profiling_data.get("avg_gflops_per_batch", 0)
-                logger.info(f"Loaded profiling metrics: {avg_gflops_per_batch:.2f} GFLOPs/batch")
+                _actual_steps = profiling_data.get("actual_training_steps", 0)
+                if _actual_steps > 0:
+                    total_gflops = avg_gflops_per_batch * _actual_steps
+                else:
+                    total_gflops = profiling_data.get("total_gflops", 0)
+                logger.info(
+                    "Loaded profiling metrics: %.2f GFLOPs/batch × %d steps = %.1f GFLOPs total",
+                    avg_gflops_per_batch,
+                    _actual_steps,
+                    total_gflops,
+                )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Could not load profiling metrics: {e}")
-            total_gflops = estimate_bert_flops(seq_len=256)
+            total_gflops = estimate_bert_flops(seq_len=256) # type: ignore
     else:
         logger.warning("Profiling metrics not found, using estimation")
-        total_gflops = estimate_bert_flops(seq_len=256)
+        total_gflops = estimate_bert_flops(seq_len=256) # type: ignore
 
     # -------- EVAL METRICS --------
     eval_metrics = extract_eval_metrics(
@@ -342,6 +408,7 @@ def execute_experiment(
         exec_time=exec_time,
         energy_kwh=energy_kwh,
         emissions_kg=emissions_kg,
+        water_litter=water_litter,
         cost_usd=cost_usd,
         avg_ram=avg_ram,
         peak_ram=peak_ram,
@@ -350,36 +417,25 @@ def execute_experiment(
         stdout=stdout,
         stderr=stderr,
         tpu_check=tpu_check,
+        failure_stage=_failure_stage,
     )
+    if not collect_resource_telemetry:
+        result["resources"] = {
+            "total_gflops": total_gflops,
+            "avg_gflops_per_batch": avg_gflops_per_batch,
+        }
+        return result
+
     workflow = legacy_task_run(result)
     result["workflow"] = workflow.to_dict()
 
     write_json_result(result, json_filename)
     write_workflow_run(workflow)
 
-    # -------- CSV AGGREGATION --------
-    append_csv_row(
-        experiment_id=experiment_id,
-        json_filename=json_filename,
-        seed=int(exp["seed"]),
+    append_workflow_csv_rows(
+        workflow,
         device_type=device_type,
-        parallel_workers=parallel_workers,
-        train_dataset_name=_train_dataset_name,
-        optimizer=train["optimizer"],
-        learning_rate=float(train["learning_rate"]),
-        batch_size=int(train["batch_size"]),
-        epoch=int(train["epoch"]),
-        exec_time=exec_time,
-        energy_kwh=energy_kwh,
-        emissions_kg=emissions_kg,
-        cost_usd=cost_usd,
-        avg_ram=avg_ram,
-        peak_ram=peak_ram,
-        avg_gflops_per_batch=avg_gflops_per_batch,
-        total_gflops=total_gflops,
-        status=status,
-        end_iso=end_iso,
-        eval_metrics=eval_metrics,
+        context=legacy_result_context(result),
     )
 
     print(f"[OK] Wrapper finalizou em {exec_time:.2f} segundos - {exp['name']} ({status})")

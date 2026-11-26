@@ -33,7 +33,6 @@ class PathManager:
     CACHE_DIR = BASE_DIR / ".cache"
     DATA_DIR = BASE_DIR / "data"
     LOGS_DIR = BASE_DIR / "logs"
-    RESULTS_DIR = BASE_DIR / "results"
     OUTPUT_DIR = BASE_DIR / "output"
     EXPERIMENTS_DIR = OUTPUT_DIR / "experiments"
     CHECKPOINTS_DIR = OUTPUT_DIR / "checkpoints"
@@ -55,7 +54,6 @@ class PathManager:
             cls.CACHE_DIR,
             cls.DATA_DIR,
             cls.LOGS_DIR,
-            cls.RESULTS_DIR,
             cls.OUTPUT_DIR,
             cls.EXPERIMENTS_DIR,
             cls.CHECKPOINTS_DIR,
@@ -184,11 +182,6 @@ class PathManager:
     def get_checkpoint_path(cls, checkpoint_name: str) -> Path:
         """Retorna caminho completo para checkpoint."""
         return cls.CHECKPOINTS_DIR / checkpoint_name
-    
-    @classmethod
-    def get_results_path(cls, results_name: str) -> Path:
-        """Retorna caminho completo para arquivo de resultados."""
-        return cls.RESULTS_DIR / results_name
     
     @classmethod
     def get_projectdir(cls) -> Path:

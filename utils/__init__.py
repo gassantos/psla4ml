@@ -37,11 +37,11 @@ _LAZY: dict[str, str] = {
 
 # Importações estáticas apenas para type checkers (não executadas em runtime)
 if TYPE_CHECKING:
+    from .config import ConfigParser, create_config
     from .device import get_device, get_device_info, set_device_optimization
-    from .seed import set_seed, ensure_reproducibility, get_reproducibility_info
     from .paths import PathManager
-    from .config import create_config, ConfigParser
-    from .reader import init_dataset, init_test_dataset, init_formatter
+    from .reader import init_dataset, init_formatter, init_test_dataset
+    from .seed import ensure_reproducibility, get_reproducibility_info, set_seed
 
 
 def __getattr__(name: str):
@@ -61,23 +61,23 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    # Device utilities
-    'get_device',
-    'get_device_info',
-    'set_device_optimization',
-    # Reproducibility utilities
-    'set_seed',
-    'ensure_reproducibility',
-    'get_reproducibility_info',
+    'ConfigParser',
     # Path utilities
     'PathManager',
     # Config utilities
     'create_config',
-    'ConfigParser',
+    'ensure_reproducibility',
+    # Device utilities
+    'get_device',
+    'get_device_info',
+    'get_reproducibility_info',
     # Reader utilities
     'init_dataset',
-    'init_test_dataset',
     'init_formatter',
+    'init_test_dataset',
+    'set_device_optimization',
+    # Reproducibility utilities
+    'set_seed',
 ]
 
 __version__ = '0.1.0'
