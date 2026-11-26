@@ -367,6 +367,37 @@ def test_run_grid_search_skips_resource_catalog_without_environments(tmp_path, m
 
     assert list(tmp_path.glob("resource_catalog_*.json")) == []
 
+
+def test_run_grid_search_skips_resource_catalog_when_disabled(monkeypatch, tmp_path):
+    """BL-MILP: etapa explícita pode ser desativada no fluxo CLI."""
+    def fake_create_config_for_combination(_base_config_path, _params, idx, **_kwargs):
+        return f"fake_config_{idx}.config"
+
+    def fake_run_single_experiment(experiment_idx, _config_path, params, gpu_list=None, **_kwargs):
+        return {"status": "success", "grid_experiment_idx": experiment_idx, "grid_params": params}
+
+    monkeypatch.setattr(executor_mod, "create_config_for_combination", fake_create_config_for_combination)
+    monkeypatch.setattr(executor_mod, "run_single_experiment", fake_run_single_experiment)
+
+    grid_config = {
+        "hyperparameters": {"learning_rate": [1e-5]},
+        "environments": {
+            "active": ["local"],
+            "details": {"local": {"cost_per_hour_usd": 0.04}},
+        },
+    }
+
+    run_grid_search(
+        base_config_path="ignored.config",
+        grid_config=grid_config,
+        parallel=1,
+        gpu_ids=[0],
+        output_dir=tmp_path,
+        collect_resource_catalog=False,
+    )
+
+    assert list(tmp_path.glob("resource_catalog_*.json")) == []
+
 def test_grid_summary_records_fixed_hyperparameters_from_the_combination_config(monkeypatch, tmp_path):
     from experiment import persistence
 

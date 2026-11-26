@@ -9,6 +9,7 @@ import cli.commands as commands_module
 from cli.commands import (
     BertPliWorkflowCommand,
     GenericWorkflowCommand,
+    GridCommand,
     SingleCommand,
     _resolve_command,
 )
@@ -50,6 +51,34 @@ def test_parser_accepts_huggingface_workflow_cache_and_resume_options():
 
     assert args.workflow_resume_run.endswith("workflow_runs/run-1")
     assert args.workflow_cache_dir.endswith("workflow_cache")
+
+
+def test_parser_resource_catalog_default_is_enabled():
+    args = build_argument_parser().parse_args(["--mode", "grid"])
+
+    assert args.resource_catalog is True
+
+
+def test_parser_accepts_no_resource_catalog_flag():
+    args = build_argument_parser().parse_args(["--mode", "grid", "--no-resource-catalog"])
+
+    assert args.resource_catalog is False
+
+
+def test_grid_command_forwards_resource_catalog_toggle(monkeypatch):
+    captured = {}
+
+    def fake_run_grid_search_experiments(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("cli.commands.run_grid_search_experiments", fake_run_grid_search_experiments)
+    monkeypatch.setattr("cli.commands.run_skyband_analysis", lambda **_kwargs: None)
+
+    args = build_argument_parser().parse_args(["--mode", "grid", "--no-resource-catalog"])
+
+    GridCommand().execute(args, {})
+
+    assert captured["collect_resource_catalog"] is False
 
 
 def test_bertpli_dry_run_persists_workflow(monkeypatch, tmp_path, capsys):
