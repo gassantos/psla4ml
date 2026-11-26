@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +73,7 @@ class LocalHardwareSpec:
     gpu_multiprocessor_count: int | None = None
     cpu_gflops_per_core: float | None = None
     tpu_core_count: int = 0
+    tpu_version: str | None = None
 
 
 def benchmark_cpu_gflops_per_core(matrix_size: int = 512, repeats: int = 3) -> float:
@@ -125,6 +128,82 @@ def detect_local_tpu() -> int:
         return 0
 
 
+def _normalize_tpu_version(raw_value: str | None) -> str | None:
+    """Normaliza variantes de versão de TPU para chaves do catálogo."""
+    if not raw_value:
+        return None
+    value = raw_value.strip().lower()
+    if "=" in value:
+        value = value.split("=", 1)[1].strip()
+    for token in value.replace("_", "-").split():
+        if token.startswith("v"):
+            return token.split("-")[0]
+    if value.startswith("v"):
+        return value.split("-")[0]
+    return None
+
+
+def _probe_tpu_environment_from_shell() -> list[str]:
+    """Tenta obter variáveis de ambiente relacionadas a TPU via shell.
+
+    Referência operacional: comandos do tipo ``export | grep -i 'TPU'``.
+    Executa de forma best-effort e retorna lista vazia quando indisponível.
+    """
+    commands = [
+        ["sh", "-lc", "export | grep -i TPU"],
+        ["powershell", "-NoProfile", "-Command", "Get-ChildItem Env:*TPU* | ForEach-Object { \"$($_.Name)=$($_.Value)\" }"],
+        ["cmd", "/c", "set TPU"],
+    ]
+    for command in commands:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=2)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.stdout:
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return []
+
+
+def detect_local_tpu_version() -> str | None:
+    """Detecta a versão de TPU local quando disponível.
+
+    A versão pode estar exposta por variáveis de ambiente em VMs TPU
+    (``TPU_ACCELERATOR_TYPE``/``TPU_NAME``) ou por APIs opcionais do
+    ``torch_xla``. Quando não for possível determinar de forma confiável,
+    retorna ``None``.
+    """
+    for env_key in ("TPU_ACCELERATOR_TYPE", "TPU_NAME"):
+        normalized = _normalize_tpu_version(os.getenv(env_key))
+        if normalized is not None:
+            return normalized
+
+    for line in _probe_tpu_environment_from_shell():
+        normalized = _normalize_tpu_version(line)
+        if normalized is not None:
+            return normalized
+
+    try:
+        import torch_xla.runtime as xr  # type: ignore
+
+        candidates: list[str | None] = []
+        for attr in ("tpu_type", "device_type", "runtime_device_type"):
+            value = getattr(xr, attr, None)
+            if callable(value):
+                try:
+                    result = value()
+                except Exception:  # pragma: no cover - defensivo
+                    result = None
+                candidates.append(str(result) if result is not None else None)
+        for candidate in candidates:
+            normalized = _normalize_tpu_version(candidate)
+            if normalized is not None:
+                return normalized
+    except Exception as exc:  # pragma: no cover - defensivo, sem torch_xla instalado
+        logger.debug("Detecção de versão de TPU indisponível: %s", exc)
+
+    return None
+
+
 def detect_local_hardware(disk_path: str = ".") -> LocalHardwareSpec:
     """Detecta as especificações reais de hardware da máquina local.
 
@@ -172,6 +251,7 @@ def detect_local_hardware(disk_path: str = ".") -> LocalHardwareSpec:
         logger.debug("Benchmark de CPU local indisponível: %s", exc)
 
     spec["tpu_core_count"] = detect_local_tpu()
+    spec["tpu_version"] = detect_local_tpu_version()
 
     return LocalHardwareSpec(**spec)
 
@@ -231,6 +311,8 @@ TPU_CATALOG: dict[str, dict[str, float]] = {
     "v2": {"bf16_tflops_per_chip": 45.0, "cores_per_chip": 2},
     "v3": {"bf16_tflops_per_chip": 123.0, "cores_per_chip": 2},
     "v4": {"bf16_tflops_per_chip": 275.0, "cores_per_chip": 2},
+    "v5e": {"bf16_tflops_per_chip": 197.0, "cores_per_chip": 1},
+    "v6e": {"bf16_tflops_per_chip": 918.0, "cores_per_chip": 1},
 }
 
 
@@ -287,7 +369,10 @@ def build_resource_spec(
     c_i = float(env_details.get("cost_per_hour_usd", 0.0))
     gpu_name = env_details.get("gpu")
     label = env_details.get("label")
-    tpu_version = env_details.get("tpu_version")
+    tpu_version = _normalize_tpu_version(
+        env_details.get("tpu_version")
+        or (local_hardware.tpu_version if local_hardware is not None else None)
+    )
 
     if env_name == "local" and local_hardware is not None:
         m_i = local_hardware.gpu_vram_gb or local_hardware.ram_total_gb
@@ -349,6 +434,94 @@ def build_resource_spec(
         "cpu_gflops_source": cpu_gflops_source,
         "source": source,
     }
+
+
+def extract_machine_baseline(
+    resource_id: str,
+    *,
+    cost_per_hour_usd: float | None = None,
+    historical_results: list[dict[str, Any]] | None = None,
+    processor_types: tuple[str, ...] = DEFAULT_PROCESSOR_TYPES,
+    disk_path: str = ".",
+) -> dict[str, Any]:
+    """Extrai baseline de processamento da máquina atual para um único recurso.
+
+    Esta função deve ser executada na própria máquina alvo (local, VM, nó
+    remoto) para obter ``d_i``, ``m_i``, ``n_i^p`` e ``g_i^p`` por detecção
+    real de hardware. Campos que dependem de fonte externa (ex.: preço de
+    contratação e custo energético histórico) são marcados como indisponíveis
+    quando não informados.
+    """
+    hardware = detect_local_hardware(disk_path=disk_path)
+    env_details: dict[str, Any] = {}
+    if cost_per_hour_usd is not None:
+        env_details["cost_per_hour_usd"] = float(cost_per_hour_usd)
+    if hardware.gpu_name:
+        env_details["gpu"] = hardware.gpu_name
+    if hardware.tpu_version:
+        env_details["tpu_version"] = hardware.tpu_version
+
+    spec = build_resource_spec(
+        "local",
+        env_details,
+        local_hardware=hardware,
+        processor_types=processor_types,
+    )
+    spec["resource_id"] = resource_id
+    spec["source"] = "detected_host"
+    spec["e_i"] = (
+        estimate_energy_rate_kwh_per_hour(historical_results, resource_id)
+        if historical_results is not None
+        else None
+    )
+
+    unavailable_fields: dict[str, str] = {}
+    if cost_per_hour_usd is None:
+        unavailable_fields["c_i"] = (
+            "Preço de contratação não é observável do hardware/OS; "
+            "depende do provedor/plano e deve ser informado externamente."
+        )
+    if spec.get("e_i") is None:
+        unavailable_fields["e_i"] = (
+            "Consumo energético requer telemetria de execução (ex.: CodeCarbon) "
+            "ou medidor externo; não é inferível apenas do inventário da máquina."
+        )
+    if "TPU" in processor_types and hardware.tpu_core_count > 0 and "TPU" not in spec["g_i"]:
+        unavailable_fields["g_i.TPU"] = (
+            "Versão exata da TPU não detectada; sem versão não há mapeamento "
+            "confiável de TFLOPS por chip no catálogo."
+        )
+    if "TPU" in processor_types and hardware.tpu_core_count == 0:
+        unavailable_fields["n_i.TPU"] = (
+            "Nenhuma TPU detectada no ambiente atual."
+        )
+        unavailable_fields["g_i.TPU"] = (
+            "Sem TPU detectada, não há poder de processamento TPU observável."
+        )
+
+    spec["unavailable_fields"] = unavailable_fields
+    return spec
+
+
+def collect_and_persist_machine_baseline(
+    resource_id: str,
+    output_path: str | Path,
+    *,
+    cost_per_hour_usd: float | None = None,
+    historical_results: list[dict[str, Any]] | None = None,
+    processor_types: tuple[str, ...] = DEFAULT_PROCESSOR_TYPES,
+    disk_path: str = ".",
+) -> Path:
+    """Extrai e persiste o baseline da máquina atual em formato de catálogo."""
+    baseline = extract_machine_baseline(
+        resource_id,
+        cost_per_hour_usd=cost_per_hour_usd,
+        historical_results=historical_results,
+        processor_types=processor_types,
+        disk_path=disk_path,
+    )
+    combined = {"resources": {resource_id: baseline}, "communication_costs": []}
+    return persist_resource_catalog(combined, output_path)
 
 
 def estimate_energy_rate_kwh_per_hour(

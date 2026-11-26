@@ -16,11 +16,14 @@ from gridsearch.resource_discovery import (
     benchmark_cpu_gflops_per_core,
     build_resource_catalog,
     build_resource_spec,
+    collect_and_persist_machine_baseline,
     collect_and_persist_resource_catalog,
     communication_cost_matrix,
     detect_local_hardware,
     detect_local_tpu,
+    detect_local_tpu_version,
     estimate_energy_rate_kwh_per_hour,
+    extract_machine_baseline,
     persist_resource_catalog,
 )
 
@@ -60,6 +63,19 @@ class TestDetectLocalTpu:
         # Nesta maquina de desenvolvimento nao ha torch_xla instalado/TPU real.
         assert detect_local_tpu() >= 0
 
+    def test_detect_version_from_env(self, monkeypatch):
+        monkeypatch.setenv("TPU_ACCELERATOR_TYPE", "v6e-1")
+        assert detect_local_tpu_version() == "v6e"
+
+    def test_detect_version_from_shell_probe_output(self, monkeypatch):
+        monkeypatch.delenv("TPU_ACCELERATOR_TYPE", raising=False)
+        monkeypatch.delenv("TPU_NAME", raising=False)
+        monkeypatch.setattr(
+            "gridsearch.resource_discovery._probe_tpu_environment_from_shell",
+            lambda: ["TPU_ACCELERATOR_TYPE=v5e-1"],
+        )
+        assert detect_local_tpu_version() == "v5e"
+
 
 class TestGpuCatalog:
     @pytest.mark.parametrize("name", ["NVIDIA RTX 3090", "NVIDIA T4", "NVIDIA V100", "NVIDIA A100"])
@@ -70,7 +86,7 @@ class TestGpuCatalog:
 
 
 class TestTpuCatalog:
-    @pytest.mark.parametrize("version", ["v2", "v3", "v4"])
+    @pytest.mark.parametrize("version", ["v2", "v3", "v4", "v5e", "v6e"])
     def test_known_tpu_versions_present(self, version):
         assert version in TPU_CATALOG
         assert TPU_CATALOG[version]["bf16_tflops_per_chip"] > 0
@@ -162,6 +178,70 @@ class TestBuildResourceSpec:
         spec = build_resource_spec("gcp_tpu", {"tpu_version": "v3", "cost_per_hour_usd": 4.0})
         assert spec["n_i"]["TPU"] == TPU_CATALOG["v3"]["cores_per_chip"]
         assert spec["g_i"]["TPU"] > 0
+
+    def test_declared_tpu_v6e_uses_918_tflops(self):
+        spec = build_resource_spec("gcp_tpu", {"tpu_version": "v6e-1", "cost_per_hour_usd": 4.0})
+        assert spec["n_i"]["TPU"] == 1
+        assert spec["g_i"]["TPU"] == pytest.approx(918000.0)
+
+    def test_declared_tpu_v5e_uses_197_tflops(self):
+        spec = build_resource_spec("gcp_tpu", {"tpu_version": "v5e-1", "cost_per_hour_usd": 4.0})
+        assert spec["n_i"]["TPU"] == 1
+        assert spec["g_i"]["TPU"] == pytest.approx(197000.0)
+
+
+class TestExtractMachineBaseline:
+    def test_reports_non_extractable_fields_when_inputs_missing(self, monkeypatch):
+        fake_hw = LocalHardwareSpec(
+            cpu_logical_cores=8, ram_total_gb=32.0, disk_total_gb=500.0, disk_free_gb=200.0,
+            gpu_name="NVIDIA RTX 3090", gpu_vram_gb=24.0, gpu_multiprocessor_count=82,
+            cpu_gflops_per_core=30.0,
+        )
+        monkeypatch.setattr(
+            "gridsearch.resource_discovery.detect_local_hardware", lambda disk_path=".": fake_hw,
+        )
+        baseline = extract_machine_baseline("host-a")
+        assert baseline["source"] == "detected_host"
+        assert "c_i" in baseline["unavailable_fields"]
+        assert "e_i" in baseline["unavailable_fields"]
+        assert baseline["n_i"]["CPU"] == 8
+        assert baseline["n_i"]["GPU"] == 82
+
+    def test_uses_historical_results_for_energy_rate(self, monkeypatch):
+        fake_hw = LocalHardwareSpec(
+            cpu_logical_cores=8, ram_total_gb=32.0, disk_total_gb=500.0, disk_free_gb=200.0,
+            cpu_gflops_per_core=30.0,
+        )
+        monkeypatch.setattr(
+            "gridsearch.resource_discovery.detect_local_hardware", lambda disk_path=".": fake_hw,
+        )
+        baseline = extract_machine_baseline(
+            "host-b",
+            historical_results=[
+                {
+                    "status": "success",
+                    "selected_environment": "host-b",
+                    "resources": {"energy_kwh": 0.2, "train_time_sec": 3600},
+                },
+            ],
+        )
+        assert baseline["e_i"] == pytest.approx(0.2)
+        assert "e_i" not in baseline["unavailable_fields"]
+
+    def test_collect_and_persist_machine_baseline(self, monkeypatch, tmp_path):
+        fake_hw = LocalHardwareSpec(
+            cpu_logical_cores=4, ram_total_gb=8.0, disk_total_gb=100.0, disk_free_gb=40.0,
+            cpu_gflops_per_core=12.0,
+        )
+        monkeypatch.setattr(
+            "gridsearch.resource_discovery.detect_local_hardware", lambda disk_path=".": fake_hw,
+        )
+        output_path = tmp_path / "machine_catalog.json"
+        path = collect_and_persist_machine_baseline("edge-node", output_path)
+        assert path.exists()
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert "edge-node" in loaded["resources"]
+        assert loaded["resources"]["edge-node"]["source"] == "detected_host"
 
 
 class TestEstimateEnergyRate:
