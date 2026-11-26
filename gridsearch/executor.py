@@ -12,6 +12,7 @@ Data: 2026-02-15
 import json
 import logging
 import os
+import re
 import sys
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -104,7 +105,8 @@ def _grid_summary_file(output_dir: Path | None = None):
 
 def _resource_catalog_file(output_dir: Path | None = None):
     base = _resolve_output_dir(output_dir)
-    return base / f"resource_catalog_{_get_device_type()}_{_TDATE}.json"
+    host = re.sub(r"[^a-zA-Z0-9_-]", "-", os.getenv("COMPUTERNAME") or os.getenv("HOSTNAME") or "host")
+    return base / f"resource_catalog_{host}_{_get_device_type()}_{_TDATE}.json"
 
 
 def _build_workflow_metadata(
@@ -385,6 +387,7 @@ def run_grid_search(
     env_cost_registry: dict[str, float] | None = None,
     tpu_cores: int = 1,
     environment_overrides: dict[str, str] | None = None,
+    collect_resource_catalog: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Executa busca em grade completa.
@@ -414,6 +417,9 @@ def run_grid_search(
             ``None`` mantém o cálculo por tarifa flat de energia para todos
             os experimentos.
         environment_overrides: Chaves da seção ``[environment]`` a sobrescrever.
+        collect_resource_catalog: Quando ``True`` e ``environments.details`` estiver
+            definido, executa a etapa explícita de coleta de baseline por host
+            antes dos experimentos.
 
     Returns:
         Lista com resultados de todos os experimentos
@@ -440,7 +446,7 @@ def run_grid_search(
     # milp_instance como um arquivo já pronto para leitura (sem heurística
     # embutida no leitor da instância MILP).
     env_details = grid_config.get("environments", {}).get("details") # type: ignore
-    if env_details:
+    if collect_resource_catalog and env_details:
         from .resource_discovery import collect_and_persist_resource_catalog
 
         resource_catalog_path = collect_and_persist_resource_catalog(

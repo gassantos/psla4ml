@@ -444,6 +444,7 @@ def run_grid_search_experiments(
     gpu_ids: list[int] | None = None,
     tpu_cores: int = 1,
     precision: str | None = None,
+    collect_resource_catalog: bool = True,
 ):
     """
     Executa grid search de hiperparâmetros.
@@ -459,6 +460,8 @@ def run_grid_search_experiments(
         dataset_overrides: Chaves da seção ``[data]`` a sobrescrever.
         gpu_ids: IDs das GPUs para distribuição round-robin (None = auto).
         precision: Precisão que sobrescreve ``[environment] precision``.
+        collect_resource_catalog: Controla a etapa explícita de coleta de baseline
+            por host antes dos experimentos (``resource_catalog_*.json``).
     """
     from .sla_summary import _emit_sla_execution_summary, _load_latest_grid_state
 
@@ -537,7 +540,8 @@ def run_grid_search_experiments(
         env_cost_registry=env_cost_registry or None,
         tpu_cores=tpu_cores,
         environment_overrides={"precision": precision} if precision else None,
-    )
+        collect_resource_catalog=collect_resource_catalog,
+    ) # type: ignore
 
     logger.info("Grid search concluído com sucesso!")
     logger.info(f"Total de experimentos executados: {len(results)}")
