@@ -51,8 +51,8 @@ def test_multicore_requires_torch_xla(monkeypatch):
 def test_rejects_invalid_tpu_core_count():
     from experiment.xla_launcher import launch_experiment
 
-    with pytest.raises(ValueError, match="maior ou igual a 1"):
-        launch_experiment(config_path="experiment.config", tpu_cores=0)
+    with pytest.raises(ValueError, match="maior ou igual a 0"):
+        launch_experiment(config_path="experiment.config", tpu_cores=-1)
 
 
 def test_cli_accepts_tpu_core_count():

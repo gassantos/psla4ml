@@ -40,10 +40,11 @@ from experiment.workflow_templates import (
     build_launcher_task_functions,
     build_launcher_workflow,
 )
-from utils.device import get_torch_device
+from utils.device import describe_tpu_unavailable, get_torch_device
 
 from .runners import (
     _build_dataset_overrides,
+    ensure_gcp_catalog_collection,
     prewarm_huggingface,
     run_grid_search_experiments,
     run_skyband_analysis,
@@ -64,6 +65,35 @@ def _workflow_code_version() -> str:
     except (OSError, subprocess.CalledProcessError):
         return "unversioned"
     return result.stdout.strip() or "unversioned"
+
+
+def _effective_tpu_cores(args: argparse.Namespace, device_type: str) -> int:
+    """Resolve o número de cores TPU efetivo para o workflow.
+
+    Em runtime TPU/XLA (ex.: Colab) sem ``--tpu-cores``, usa 1 core (processo
+    único) em vez de 0, para que o experimento rode no device XLA detectado.
+    Fora de TPU, retorna 0.
+    """
+    if device_type != "TPU":
+        return 0
+    return args.tpu_cores if args.tpu_cores > 0 else 1
+
+
+def _ensure_tpu_available(args: argparse.Namespace) -> None:
+    """Falha com diagnóstico claro se --tpu-cores foi pedido sem runtime TPU/XLA."""
+    if args.tpu_cores <= 0:
+        return
+    if get_torch_device().get("type") == "TPU":
+        return
+    raise RuntimeError(
+        "TPU solicitado via --tpu-cores, mas runtime TPU/XLA não está disponível: "
+        f"{describe_tpu_unavailable()}. "
+        "Execute em runtime TPU (ex.: Colab TPU) com o extra 'tpu' ativo: "
+        "'export PJRT_DEVICE=TPU' e 'uv run --python 3.12 --extra tpu python -m main ...' "
+        "(um 'uv run' sem --extra tpu usa o torch CUDA/CPU e não enxerga o torch_xla; "
+        "o libtpu exigido pelo torch_xla 2.9 só tem wheels até Python 3.12). "
+        "Para CPU/GPU, use --tpu-cores 0."
+    )
 
 
 class Command(ABC):
@@ -91,7 +121,13 @@ class SkybandOnlyCommand(Command):
 class SingleCommand(Command):
     """Executa um único experimento, opcionalmente seguido de Skyband."""
 
+    @staticmethod
+    def _ensure_tpu_available_if_requested(args: argparse.Namespace) -> None:
+        _ensure_tpu_available(args)
+
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
+        self._ensure_tpu_available_if_requested(args)
+        ensure_gcp_catalog_collection(args.grid_config)
         dataset_overrides = _build_dataset_overrides(args)
         # Cache quente antes de medir, como no grid; evita contar download no tempo/energia.
         prewarm_huggingface(args.config, dataset_overrides, strict=False)
@@ -122,7 +158,7 @@ class SingleCommand(Command):
 
         device_type = get_torch_device()["type"]
         gpu_count = len(args.gpu) if args.gpu else (1 if device_type == "GPU" else 0)
-        tpu_cores = args.tpu_cores if device_type == "TPU" else 0
+        tpu_cores = _effective_tpu_cores(args, device_type)
         config = HuggingFaceWorkflowConfig(
             name=f"huggingface-single-{args.train_dataset}",
             dataset_source=args.dataset_source,
@@ -152,7 +188,7 @@ class SingleCommand(Command):
                 gpu_list=args.gpu,
                 train_file=args.train_dataset,
                 environment_overrides={"precision": args.precision} if args.precision else None,
-                tpu_cores=args.tpu_cores,
+                tpu_cores=tpu_cores,
             ),
             cache=cache,
             code_version=_workflow_code_version() if cache else None,
@@ -171,7 +207,7 @@ class SingleCommand(Command):
         """Executa o config local pelo template canônico, com um único worker."""
         device_type = get_torch_device()["type"]
         gpu_count = len(args.gpu) if args.gpu else (1 if device_type == "GPU" else 0)
-        tpu_cores = args.tpu_cores if device_type == "TPU" else 0
+        tpu_cores = _effective_tpu_cores(args, device_type)
         config = LauncherWorkflowConfig(
             name=f"single-{args.train_dataset}",
             config_path=args.config,
@@ -195,7 +231,7 @@ class SingleCommand(Command):
                 config,
                 gpu_list=args.gpu,
                 environment_overrides={"precision": args.precision} if args.precision else None,
-                tpu_cores=args.tpu_cores,
+                tpu_cores=tpu_cores,
             ),
             cache=cache,
             code_version=_workflow_code_version() if cache else None,
@@ -213,7 +249,13 @@ class SingleCommand(Command):
 class GridCommand(Command):
     """Executa grid search, opcionalmente seguido de Skyband."""
 
+    @staticmethod
+    def _ensure_tpu_available_if_requested(args: argparse.Namespace) -> None:
+        _ensure_tpu_available(args)
+
     def execute(self, args: argparse.Namespace, sla_dict: dict) -> None:
+        self._ensure_tpu_available_if_requested(args)
+        ensure_gcp_catalog_collection(args.grid_config)
         run_grid_search_experiments(
             base_config_path=args.config,
             grid_config_path=args.grid_config,
@@ -226,7 +268,8 @@ class GridCommand(Command):
             gpu_ids=args.gpu,
             tpu_cores=args.tpu_cores,
             precision=args.precision,
-        )
+            collect_resource_catalog=args.resource_catalog,
+        ) 
         if not args.no_skyband:
             run_skyband_analysis(
                 k=args.skyband_k,

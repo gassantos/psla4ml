@@ -394,3 +394,46 @@ class TestBuildResultDictWithTpuCheck:
         )
         result = build_result_dict(**self._base_kwargs(), tpu_check=tpu)
         assert "warnings" not in result
+
+
+def test_launch_experiment_accepts_zero_tpu_cores(monkeypatch):
+    """Regressão: --tpu-cores padrão (0) não deve lançar ValueError."""
+    from experiment import xla_launcher
+
+    calls = []
+    monkeypatch.setattr(
+        "experiment.runner.execute_experiment",
+        lambda **kw: calls.append(kw) or {"ok": True},
+    )
+    assert xla_launcher.launch_experiment(tpu_cores=0, config_path="x") == {"ok": True}
+    assert xla_launcher.launch_experiment(tpu_cores=1, config_path="x") == {"ok": True}
+    assert len(calls) == 2
+
+
+def test_launch_experiment_rejects_negative_tpu_cores():
+    import pytest
+    from experiment import xla_launcher
+
+    with pytest.raises(ValueError):
+        xla_launcher.launch_experiment(tpu_cores=-1)
+
+
+def test_effective_tpu_cores_defaults_to_one_on_tpu():
+    import argparse
+    from cli.commands import _effective_tpu_cores
+
+    assert _effective_tpu_cores(argparse.Namespace(tpu_cores=0), "TPU") == 1
+    assert _effective_tpu_cores(argparse.Namespace(tpu_cores=8), "TPU") == 8
+    assert _effective_tpu_cores(argparse.Namespace(tpu_cores=8), "GPU") == 0
+
+
+def test_tpu_unavailable_error_explains_cause(monkeypatch):
+    import argparse
+    import pytest
+    from cli import commands
+
+    monkeypatch.setattr(commands, "get_torch_device", lambda: {"type": "CPU"})
+    monkeypatch.setattr(commands, "describe_tpu_unavailable", lambda: "torch_xla não pôde ser importado (X)")
+    with pytest.raises(RuntimeError, match=r"--extra tpu.*PJRT_DEVICE|PJRT_DEVICE.*--extra tpu") as exc:
+        commands._ensure_tpu_available(argparse.Namespace(tpu_cores=1))
+    assert "torch_xla não pôde ser importado" in str(exc.value)

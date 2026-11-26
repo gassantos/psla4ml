@@ -49,16 +49,28 @@ def _suppress_nvml_stderr():
 # ---------------------------------------------------------------------------
 # XLA availability — exposto como atributo de módulo para permitir mocking
 # ---------------------------------------------------------------------------
+_XLA_IMPORT_ERROR: str | None = None
 try:
     import torch_xla.core.xla_model as xm  # type: ignore[import]
     import torch_xla.distributed.parallel_loader as xla_parallel_loader  # type: ignore[import]
     import torch_xla.runtime as xr  # type: ignore[import]
     _XLA_AVAILABLE = True
-except ImportError:
+except ImportError as _exc:
     xm = None  # type: ignore[assignment]
     xla_parallel_loader = None  # type: ignore[assignment]
     xr = None  # type: ignore[assignment]
     _XLA_AVAILABLE = False
+    _XLA_IMPORT_ERROR = f"{type(_exc).__name__}: {_exc}"
+
+
+def describe_tpu_unavailable() -> str:
+    """Explica por que o runtime TPU/XLA não foi detectado (para mensagens de erro)."""
+    if not _XLA_AVAILABLE:
+        return f"torch_xla não pôde ser importado ({_XLA_IMPORT_ERROR})"
+    return (
+        "torch_xla foi importado, mas nenhum device XLA foi encontrado "
+        "(verifique PJRT_DEVICE=TPU e o runtime TPU do Colab)"
+    )
 
 
 def _shard_data_loader(data_loader):

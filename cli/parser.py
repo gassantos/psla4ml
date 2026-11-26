@@ -41,6 +41,10 @@ Exemplos de uso:
   # Grid search com configuração específica
   python -m main --mode grid --grid-config gridsearch/config/grid_search_test.json
 
+  # Controlar etapa explícita de catálogo de recursos por host antes do grid
+  python -m main --mode grid --resource-catalog
+  python -m main --mode grid --no-resource-catalog
+
   # Grid search paralelo com 4 workers
   python -m main --mode grid --parallel 4
 
@@ -192,6 +196,18 @@ Configurações padrão:
     )
 
     parser.add_argument(
+        "--resource-catalog",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        dest="resource_catalog",
+        help=(
+            "Controla a etapa explicita de coleta de baseline por host antes dos "
+            "experimentos do grid (gera resource_catalog_*.json). "
+            "Use --no-resource-catalog para desativar."
+        ),
+    )
+
+    parser.add_argument(
         "--gpu",
         type=int,
         nargs="*",
@@ -207,11 +223,11 @@ Configurações padrão:
     parser.add_argument(
         "--tpu-cores",
         type=int,
-        default=1,
+        default=0,
         metavar="N",
         help=(
-            "Número de cores TPU para execução PJRT (padrão: 1). "
-            "Use 8 no Colab TPU; requer --parallel 1 no modo grid."
+            "Número de cores TPU para execução PJRT (padrão: 0 = desabilitado). "
+            "Use 1 ou 8 no Colab TPU; requer --parallel 1 no modo grid."
         ),
     )
 

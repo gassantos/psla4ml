@@ -332,7 +332,7 @@ def train(parameters, config, gpu_list):
             }, f, indent=2)
 
         logger.info(
-            "Profiling complete: %.2f GFLOPs/batch avg, %d steps → %.1f TFLOPs total",
+            "Profiling complete: %.2f GFLOPs/batch avg, %d steps -> %.1f TFLOPs total",
             profiling_metrics["avg_flops_per_batch"] / 1e9,
             actual_training_steps,
             profiling_metrics["avg_flops_per_batch"] / 1e9 * actual_training_steps / 1000,

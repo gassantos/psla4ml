@@ -73,6 +73,50 @@ from gridsearch import analyze_results
 analysis = analyze_results(results)
 ```
 
+### Coleta de catálogo GCP/Colab para viabilidade MILP
+
+> A partir desta versão, a coleta é disparada automaticamente no `main.py` para execuções `--mode single` e `--mode grid` (modo best-effort, sem bloquear o treino em caso de falha).
+
+Use o script abaixo para gerar CSVs de catálogo em `output/experiments/metrics` com:
+
+- recursos por ambiente (`c_i`, `m_i`, `d_i`, `e_i`, `n_i`, `g_i`),
+- custos de comunicação de referência (`c_comm(i,j)`),
+- agregados de adaptação por período extraídos de `experiment_summary_*.csv`.
+
+Regra de qualidade dos dados: os catálogos `gcp_resource_catalog_*` e
+`gcp_communication_catalog_*` persistem somente valores obtidos da máquina de
+execução ou de API oficial do Google. Campos sem fonte direta são gravados como
+`N/A`.
+
+```powershell
+uv run python -m scripts.collect_gcp_catalog `
+  --grid-config gridsearch/config/grid_search_multienv.json `
+  --device-type GPU
+```
+
+Saídas geradas:
+
+- `gcp_resource_catalog_<DEVICE>-<YYYYMMDD>.csv`
+- `gcp_communication_catalog_<DEVICE>-<YYYYMMDD>.csv`
+
+Opcionalmente, para complementar metadados e preços estimados por componentes
+via APIs oficiais da GCP (Compute + Cloud Billing):
+
+```powershell
+uv run python -m scripts.collect_gcp_catalog `
+  --grid-config gridsearch/config/grid_search_multienv.json `
+  --device-type GPU `
+  --fetch-gcp-api
+```
+
+Nesse modo, também é gerado:
+
+- `gcp_machine_types_<DEVICE>-<YYYYMMDD>.csv`
+
+Parâmetros `--gcp-project` e `--gcp-zone` são opcionais (autodetecção por metadata
+quando executando em GCP). Para ambientes sem metadata, você pode informar ambos e
+habilitar `--gcloud-fallback` para complementar consultas de machine type.
+
 ## 📁 Estrutura
 
 ```sh

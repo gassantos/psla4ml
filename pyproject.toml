@@ -3,14 +3,18 @@ name = "psla4ml"
 version = "0.1.0"
 description =   "PSLA4ML combina hiperparâmetros em Pipelines ML conforme SLA"
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "codecarbon==3.3.2",
     "configparser>=7.2.0",
     "datasets>=4.5.0",
+    "dynaconf>=3.3.5",
     "filelock>=3.20.0",
+    "google-cloud-billing>=1.21.0",
+    "google-cloud-compute>=1.58.0",
     "numpy>=2.2.6",
     "psutil>=7.2.2",
+    "python-dotenv>=1.2.4",
     "tensorboard>=2.14",
     "torch>=2.9,<2.10",
     "torchaudio>=2.9,<2.10",

@@ -19,7 +19,7 @@ import itertools
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _PARAM_MAPPING_PATH = Path(__file__).parent / "config" / "param_mapping.json"
 
 
-def _load_param_mapping() -> Dict[str, Dict[str, str]]:
+def _load_param_mapping() -> dict[str, dict[str, str]]:
     """Carrega o mapeamento param_name → (section, key) de arquivo externo.
 
     O mapeamento define como cada hiperparâmetro do grid search é traduzido
@@ -45,7 +45,7 @@ def _load_param_mapping() -> Dict[str, Dict[str, str]]:
     return data.get("mapping", {})
 
 
-def read_config_hyperparameters(config_path: str | Path) -> Dict[str, str]:
+def read_config_hyperparameters(config_path: str | Path) -> dict[str, str]:
     """Valores efetivos dos hiperparâmetros mapeados, lidos de um config.
 
     Inclui também os que não variam na grade (ex.: ``seed``, ``dropout``); os ausentes
@@ -54,7 +54,7 @@ def read_config_hyperparameters(config_path: str | Path) -> Dict[str, str]:
     from experiment.helpers import load_config
 
     config = load_config(str(config_path))
-    values: Dict[str, str] = {}
+    values: dict[str, str] = {}
     for name, target in _load_param_mapping().items():
         value = config.get(target["section"], target.get("key", name), fallback="").strip()
         if value:
@@ -108,7 +108,7 @@ def filter_grid_config(config: dict) -> dict:
     return filtered
 
 
-def validate_grid_config(config: dict) -> Tuple[bool, str]:
+def validate_grid_config(config: dict) -> tuple[bool, str]:
     """
     Valida configuração de grid search.
 
@@ -150,7 +150,7 @@ def validate_grid_config(config: dict) -> Tuple[bool, str]:
 # GERAÇÃO DE COMBINAÇÕES
 # ============================================================================
 
-def generate_parameter_grid(grid_config: Dict[str, List[Any]]) -> List[Dict[str, Any]]:
+def generate_parameter_grid(grid_config: dict[str, list[Any]]) -> list[dict[str, Any]]:
     """
     Gera todas as combinações possíveis de hiperparâmetros.
 
@@ -181,7 +181,7 @@ def generate_parameter_grid(grid_config: Dict[str, List[Any]]) -> List[Dict[str,
     # "environment" para expandir hiperparâmetros x ambientes.
     active_envs = (
         full_config.get("environments", {})
-        .get("active", [])
+        .get("active", []) # type: ignore
         if isinstance(full_config.get("environments", {}), dict)
         else []
     )
@@ -206,7 +206,7 @@ def generate_parameter_grid(grid_config: Dict[str, List[Any]]) -> List[Dict[str,
 
 def create_config_for_combination(
     base_config_path: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     experiment_idx: int,
     train_file: str = "train_task2",
     *,

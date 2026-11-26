@@ -1,0 +1,14 @@
+[default]
+PROJECT_ID = "@format {env[project_id]}"
+ZONE_NAME = "@format {env[zone_name]}"
+INSTANCE_NAME = "@format {env[instance_name]}"
+
+[development]
+# Configurações de REDE NAT (Default Google GCP)
+INTERFACE_NETWORK = "@format projects/{env[project_id]}/global/networks/default"
+NAT_NAME = "External NAT"
+NAT_TYPE = "ONE_TO_ONE_NAT"
+
+# Imagem-padrão para Máquina de Execução
+SRC_IMG = "projects/debian-cloud/global/images/family/debian-12"
+MACHINE_TYPE = "@format zones/{env[zone_name]}/machineTypes/{env[machine_type_name]}"
